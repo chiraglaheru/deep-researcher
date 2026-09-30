@@ -77,7 +77,6 @@ def search_google(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> list[di
             "num": num_results,
             "api_key": api_key,
         },
-        timeout=REQUEST_TIMEOUT_SECONDS,
     )
 
     try:

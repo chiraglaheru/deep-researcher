@@ -1,4 +1,6 @@
+fastapi
+uvicorn
+google-genai
 requests
 python-dotenv
-# provides the `serpapi` module (SerpApiClient, GoogleSearch); not the `serpapi` PyPI package
 google-search-results

@@ -1,5 +1,9 @@
+import json
+
 from fastapi import FastAPI
 from pydantic import BaseModel
+
+from research.planner import create_research_plan
 
 app = FastAPI()
 
@@ -20,7 +24,9 @@ def health():
 
 @app.post("/research")
 def research(request: ResearchRequest):
+    plan = create_research_plan(request.question)
     return {
-        "message": "Research started",
-        "question": request.question
+        "question": request.question,
+        "plan" : json.loads(plan)
+        
     }

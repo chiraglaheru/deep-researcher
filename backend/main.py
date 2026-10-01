@@ -30,7 +30,7 @@ def health():
 def research(request: ResearchRequest):
     try:
         plan = json.loads(create_research_plan(request.question))
-    except json.JSONDecodeError:
+    except ValueError:
         raise HTTPException(
             status_code=502,
             detail="Research planner returned invalid JSON",

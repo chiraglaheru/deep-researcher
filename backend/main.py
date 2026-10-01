@@ -3,6 +3,8 @@ import json
 from fastapi import FastAPI, HTTPException
 from google.genai.errors import APIError
 from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from backend.research.planner import create_research_plan
 from backend.research.searcher import search_subquestion as search_subquestion_tool
@@ -15,7 +17,11 @@ RESEARCH_ERRORS = (APIError,)
 
 
 app = FastAPI()
-
+app.mount(
+    "/frontend",
+    StaticFiles(directory="frontend"),
+    name="frontend",
+)
 
 class ResearchRequest(BaseModel):
     question: str
@@ -23,7 +29,7 @@ class ResearchRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "Deep Researcher API is running!"}
+    return FileResponse("frontend/index.html")
 
 
 @app.get("/health")

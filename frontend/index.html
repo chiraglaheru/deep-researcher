@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Deep Researcher</title>
+
+    <link rel="stylesheet" href="/frontend/style.css">
+</head>
+
+<body>
+
+    <header class="header">
+        <div class="brand">
+            <div class="logo">DR</div>
+
+            <div>
+                <h1>Deep Researcher</h1>
+                <p>AI-powered research assistant</p>
+            </div>
+        </div>
+    </header>
+
+
+    <main class="container">
+
+        <section class="hero">
+
+            <div class="eyebrow">
+                DEEP RESEARCH
+            </div>
+
+            <h2>
+                Ask anything.
+                <span>Research deeply.</span>
+            </h2>
+
+            <p class="description">
+                Ask a question and let the research pipeline break it
+                down, investigate each part, and generate a final report.
+            </p>
+
+
+            <form id="research-form">
+
+                <textarea
+                    id="question"
+                    placeholder="What do you want to research?"
+                    required
+                ></textarea>
+
+                <button id="research-button" type="submit">
+                    Start Research →
+                </button>
+
+            </form>
+
+            <div id="error" class="error hidden"></div>
+
+        </section>
+
+
+        <section id="results" class="results hidden">
+
+            <div class="section-header">
+                <div class="eyebrow">
+                    RESEARCH RESULTS
+                </div>
+
+                <h3 id="result-question"></h3>
+            </div>
+
+
+            <!-- Research Plan -->
+
+            <div class="card">
+
+                <h4>Research Plan</h4>
+
+                <ol id="plan"></ol>
+
+            </div>
+
+
+            <!-- Findings -->
+
+            <div class="card">
+
+                <h4>Findings</h4>
+
+                <div id="findings"></div>
+
+            </div>
+
+
+            <!-- Final Report -->
+
+            <div class="card report-card">
+
+                <div class="report-label">
+                    FINAL REPORT
+                </div>
+
+                <div id="report" class="report"></div>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <script src="/frontend/app.js"></script>
+
+</body>
+</html>

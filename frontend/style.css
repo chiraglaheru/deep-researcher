@@ -1,0 +1,374 @@
+* {
+    box-sizing: border-box;
+}
+
+:root {
+    font-family:
+        Inter,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    background: #090909;
+    color: #eeeeee;
+}
+
+body {
+    margin: 0;
+    min-width: 320px;
+    background:
+        radial-gradient(
+            circle at 50% 0%,
+            #1b1b1b 0,
+            #090909 45%
+        );
+
+    min-height: 100vh;
+}
+
+
+/* Header */
+
+.header {
+    border-bottom: 1px solid #242424;
+    background: rgba(9, 9, 9, 0.8);
+}
+
+.brand {
+    max-width: 1100px;
+    margin: auto;
+
+    padding: 20px 24px;
+
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.logo {
+    width: 42px;
+    height: 42px;
+
+    display: grid;
+    place-items: center;
+
+    border-radius: 12px;
+
+    background: #eeeeee;
+    color: #090909;
+
+    font-weight: 800;
+    font-size: 14px;
+}
+
+.brand h1 {
+    margin: 0;
+    font-size: 17px;
+}
+
+.brand p {
+    margin: 3px 0 0;
+
+    color: #777;
+
+    font-size: 13px;
+}
+
+
+/* Main */
+
+.container {
+    max-width: 1000px;
+
+    margin: auto;
+
+    padding: 90px 24px 100px;
+}
+
+
+/* Hero */
+
+.hero {
+    max-width: 760px;
+
+    margin: auto;
+
+    text-align: center;
+}
+
+.eyebrow {
+    color: #888;
+
+    font-size: 11px;
+    font-weight: 700;
+
+    letter-spacing: 0.16em;
+}
+
+.hero h2 {
+    margin: 18px 0;
+
+    font-size: clamp(42px, 7vw, 72px);
+
+    line-height: 0.98;
+
+    letter-spacing: -0.05em;
+}
+
+.hero h2 span {
+    color: #777;
+}
+
+.description {
+    max-width: 620px;
+
+    margin: 0 auto 35px;
+
+    color: #999;
+
+    line-height: 1.7;
+
+    font-size: 15px;
+}
+
+
+/* Form */
+
+#research-form {
+    padding: 8px;
+
+    border: 1px solid #303030;
+
+    border-radius: 18px;
+
+    background: #111;
+
+    box-shadow:
+        0 20px 70px rgba(0, 0, 0, 0.35);
+}
+
+textarea {
+    width: 100%;
+
+    min-height: 130px;
+
+    resize: vertical;
+
+    border: 0;
+    outline: 0;
+
+    background: transparent;
+
+    color: #eee;
+
+    padding: 18px;
+
+    font-size: 16px;
+}
+
+textarea::placeholder {
+    color: #555;
+}
+
+button {
+    width: 100%;
+
+    border: 0;
+
+    border-radius: 12px;
+
+    padding: 14px 20px;
+
+    background: #eee;
+
+    color: #080808;
+
+    cursor: pointer;
+
+    font-weight: 700;
+}
+
+button:hover {
+    background: white;
+}
+
+button:disabled {
+    opacity: 0.45;
+
+    cursor: not-allowed;
+}
+
+
+/* Error */
+
+.error {
+    margin-top: 20px;
+
+    padding: 16px;
+
+    border: 1px solid #572b2b;
+
+    border-radius: 12px;
+
+    background: #1b1010;
+
+    color: #e5aaaa;
+
+    text-align: left;
+}
+
+
+/* Results */
+
+.results {
+    margin-top: 90px;
+}
+
+.section-header {
+    margin-bottom: 30px;
+}
+
+.section-header h3 {
+    margin: 10px 0 0;
+
+    font-size: 28px;
+
+    line-height: 1.3;
+}
+
+
+/* Cards */
+
+.card {
+    margin-top: 18px;
+
+    padding: 26px;
+
+    border: 1px solid #242424;
+
+    border-radius: 16px;
+
+    background: #101010;
+}
+
+.card h4 {
+    margin: 0 0 20px;
+
+    font-size: 16px;
+}
+
+
+/* Plan */
+
+#plan {
+    margin: 0;
+
+    padding-left: 24px;
+
+    color: #bbb;
+}
+
+#plan li {
+    padding: 9px 0;
+
+    line-height: 1.5;
+}
+
+
+/* Findings */
+
+.finding {
+    display: flex;
+
+    gap: 18px;
+
+    padding: 20px 0;
+
+    border-top: 1px solid #242424;
+}
+
+.finding:first-child {
+    border-top: 0;
+
+    padding-top: 0;
+}
+
+.finding-number {
+    color: #555;
+
+    font-size: 12px;
+
+    font-weight: 700;
+}
+
+.finding h5 {
+    margin: 0 0 8px;
+
+    color: #ddd;
+
+    font-size: 15px;
+}
+
+.finding p {
+    margin: 0;
+
+    color: #999;
+
+    line-height: 1.7;
+
+    white-space: pre-wrap;
+}
+
+
+/* Report */
+
+.report-card {
+    margin-top: 30px;
+}
+
+.report-label {
+    margin-bottom: 18px;
+
+    color: #777;
+
+    font-size: 11px;
+
+    font-weight: 700;
+
+    letter-spacing: 0.14em;
+}
+
+.report {
+    color: #ddd;
+
+    line-height: 1.8;
+
+    white-space: pre-wrap;
+}
+
+
+/* Utility */
+
+.hidden {
+    display: none;
+}
+
+
+/* Mobile */
+
+@media (max-width: 600px) {
+
+    .container {
+        padding-top: 60px;
+    }
+
+    .hero h2 {
+        font-size: 44px;
+    }
+
+    .card {
+        padding: 20px;
+    }
+}

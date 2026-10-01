@@ -5,6 +5,8 @@ from backend import main
 
 client = TestClient(main.app)
 
+def fake_report(question, findings):
+    return "Final research report"
 
 def test_research_flow(monkeypatch):
     def fake_plan(question):
@@ -20,12 +22,15 @@ def test_research_flow(monkeypatch):
             }
         ]
 
+    
+
     def fake_research(subquestion, search_results):
         return f"Finding for: {subquestion}"
 
     monkeypatch.setattr(main, "create_research_plan", fake_plan)
     monkeypatch.setattr(main, "search_subquestion_tool", fake_search)
     monkeypatch.setattr(main, "run_researcher", fake_research)
+    monkeypatch.setattr(main, "synthesize_report", fake_report)
 
     response = client.post(
         "/research",
@@ -33,6 +38,7 @@ def test_research_flow(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.json()["report"] == "Final research report"
 
     data = response.json()
 

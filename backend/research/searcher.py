@@ -1,12 +1,3 @@
-"""Search orchestration: route a research subquestion to the right search tools.
-
-Routing is rule-based, no LLM is involved. Google always runs as the default
-source, and GitHub or Google News are added when the query carries a code or a
-recency signal. Every selected tool runs independently and only the errors a
-tool documents are absorbed, so one failing source cannot take down the rest of
-the search and a genuine bug still surfaces.
-"""
-
 import re
 from typing import Any, Callable
 

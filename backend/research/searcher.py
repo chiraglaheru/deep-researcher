@@ -10,7 +10,7 @@ the search and a genuine bug still surfaces.
 import re
 from typing import Any, Callable
 
-from tools import github, news, serpapi
+from backend.tools import github, news, serpapi
 
 GOOGLE = "google"
 GITHUB = "github"

@@ -1,11 +1,13 @@
 import json
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from backend.research.planner import create_research_plan
 from backend.research.searcher import search_subquestion as search_subquestion_tool
 from backend.research.researcher import research_subquestion as run_researcher
+from backend.research.report import synthesize_report
+
 
 app = FastAPI()
 
@@ -26,7 +28,13 @@ def health():
 
 @app.post("/research")
 def research(request: ResearchRequest):
-    plan = json.loads(create_research_plan(request.question))
+    try:
+        plan = json.loads(create_research_plan(request.question))
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=502,
+            detail="Research planner returned invalid JSON",
+        )
 
     findings = []
 
@@ -45,8 +53,14 @@ def research(request: ResearchRequest):
             }
         )
 
+    final_report = synthesize_report(
+        request.question,
+        findings,
+    )
+
     return {
         "question": request.question,
         "plan": plan,
+        "report": final_report,
         "findings": findings,
     }

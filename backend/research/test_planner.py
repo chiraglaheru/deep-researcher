@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from research.planner import create_research_plan
+from backend.research.planner import create_research_plan
 
 VALID_PLAN = {
     "subquestions": [
@@ -37,7 +37,7 @@ def gemini(monkeypatch):
 
     def install(text=None, error=None):
         fake = FakeClient(text, error)
-        monkeypatch.setattr("research.planner.client", fake)
+        monkeypatch.setattr("backend.research.planner.client", fake)
         return fake
 
     return install

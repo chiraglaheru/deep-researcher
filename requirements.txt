@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-google-genai
-requests
-python-dotenv
 google-search-results
+litellm
+langgraph
+python-dotenv
+pytest

@@ -1,46 +1,60 @@
-"""Collect raw results from several searches into one clean, deduplicated list.
+"""Evidence layer: dedupe, date/freshness, contradiction detection."""
+import datetime, re
+from urllib.parse import urlparse
+from .llm import ask
 
-Pure and offline: no LLM calls, no API requests. The caller supplies the merged
-search results, and this module only normalizes, filters and deduplicates them.
-"""
-
-from typing import Any
-
-RESULT_FIELDS = ("title", "url", "snippet", "source")
+THIS_YEAR = datetime.date.today().year
 
 
-def _text(value: Any) -> str:
-    """Return a stripped string for a raw field, or "" when it is absent."""
-    return str(value).strip() if value is not None else ""
+def _key(url):
+    p = urlparse(url or "")
+    return (p.netloc.replace("www.", "") + p.path.rstrip("/")).lower()
 
 
-def collect_results(results: list[dict[str, Any]] | None) -> list[dict[str, str]]:
-    """Normalize and deduplicate merged search results.
+def year_of(date):
+    if not date:
+        return None
+    if "ago" in str(date).lower():
+        return THIS_YEAR
+    m = re.search(r"(19|20)\d{2}", str(date))
+    return int(m.group()) if m else None
 
-    Accepts the results of any number of searches already merged into one list.
-    Every result is reduced to RESULT_FIELDS, with missing values replaced by an
-    empty string and any extra field dropped. Entries that are not dictionaries
-    and results without a usable URL are skipped, and results sharing a URL are
-    treated as duplicates where only the first occurrence is kept, in the input
-    order. Returns [] when there is nothing usable to collect.
-    """
-    collected: list[dict[str, str]] = []
-    seen_urls: set[str] = set()
 
-    for result in results or []:
-        if not isinstance(result, dict):
-            continue
-        url = _text(result.get("url"))
-        if not url or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        collected.append(
-            {
-                "title": _text(result.get("title")),
-                "url": url,
-                "snippet": _text(result.get("snippet")),
-                "source": _text(result.get("source")),
-            }
-        )
+CONTRA_SYS = """You are checking evidence for contradictions. Given numbered sources, find claims where
+sources genuinely disagree (not just different emphasis). Return JSON only:
+{"contradictions":[{"topic":"...","side_a":"...","sources_a":[1],"side_b":"...","sources_b":[2]}]}
+Return an empty list if none."""
 
-    return collected
+
+class Collector:
+    def __init__(self):
+        self.items = {}
+
+    def add(self, results):
+        new = []
+        for r in results:
+            k = _key(r.get("url"))
+            if not k or k in self.items:
+                continue
+            r["id"] = len(self.items) + 1
+            r["year"] = year_of(r.get("date"))
+            r["stale"] = bool(r["year"] and THIS_YEAR - r["year"] >= 3)
+            self.items[k] = r
+            new.append(r)
+        return new
+
+    def list(self):
+        return list(self.items.values())
+
+    def context(self, limit=40):
+        lines = []
+        for r in self.list()[:limit]:
+            tag = f"{r['type']}, {r['year'] or 'undated'}{', STALE' if r['stale'] else ''}"
+            lines.append(f"[{r['id']}] ({tag}) {r['title']} - {r['snippet']}")
+        return "\n".join(lines)
+
+    def find_contradictions(self):
+        if len(self.items) < 2:
+            return []
+        out = ask(CONTRA_SYS, self.context(), json_mode=True, role="judge")
+        return out.get("contradictions", [])

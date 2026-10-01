@@ -1,54 +1,21 @@
-import os
-
-from dotenv import load_dotenv
-from google import genai
-
-from backend.evidence.collector import collect_evidence
-
-load_dotenv()
+from .graph import graph
 
 
-def research_subquestion(
-    question: str,
-    search_results: list[dict],
-) -> str:
-    """Analyze collected search evidence and produce a research finding."""
-
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-    evidence = collect_evidence(search_results)
-
-    evidence_text = "\n\n".join(
-        f"Title: {item.get('title', '')}\n"
-        f"URL: {item.get('url', '')}\n"
-        f"Snippet: {item.get('snippet', '')}\n"
-        f"Source: {item.get('source', '')}\n"
-        f"Date: {item.get('date', '')}"
-        for item in evidence
-    )
-
-    prompt = f"""
-You are a research agent.
-
-Research the following subquestion using ONLY the evidence provided.
-
-Subquestion:
-{question}
-
-Evidence:
-{evidence_text}
-
-Instructions:
-- Answer the subquestion using only the evidence.
-- Do not invent facts.
-- If the evidence is insufficient, say so.
-- Keep the answer concise and factual.
-- Mention relevant source URLs when making claims.
-"""
-
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-    )
-
-    return response.text
+async def deep_research(question: str, max_rounds: int = 3):
+    evidence = []
+    init = {"question": question, "max_rounds": max_rounds, "raw": [], "log": []}
+    async for chunk in graph.astream(init, stream_mode="updates"):
+        for node, upd in chunk.items():
+            if node == "planner":
+                yield {"type": "plan", "data": upd["plan"]}
+            elif node == "search_worker":
+                yield {"type": "results", **upd["log"][0]}
+            elif node == "collect":
+                evidence = upd["evidence"]
+                yield {"type": "evidence", "count": len(evidence)}
+            elif node == "gap_check":
+                yield {"type": "gap", "data": upd["gap"]}
+            elif node == "contradiction_check":
+                yield {"type": "contradictions", "data": upd["contradictions"]}
+            elif node == "synthesizer":
+                yield {"type": "report", "data": upd["report"], "sources": evidence}

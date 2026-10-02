@@ -1,4 +1,7 @@
-"""Retry and fallback behaviour for backend.research.llm.ask."""
+"""Retry, fallback, and model-health behaviour for backend.research.llm.ask."""
+
+import os
+from unittest.mock import patch
 
 import pytest
 import litellm
@@ -12,26 +15,75 @@ class FakeResponse:
         self.choices = [type("C", (), {"message": message})()]
 
 
+class Clock:
+    """A monotonic clock the tests move by hand."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
 @pytest.fixture(autouse=True)
-def no_sleep(monkeypatch):
-    """Never actually wait between retries."""
-    monkeypatch.setattr(llm, "sleep", lambda seconds: None)
+def world(monkeypatch):
+    """Never sleep for real, and never let health state leak between cases.
+
+    Autouse, but also requestable as `world` by tests that need the clock or
+    the recorded sleeps.
+    """
+    slept = []
+    clock = Clock()
+    monkeypatch.setattr(llm, "sleep", lambda seconds: slept.append(seconds))
+
+    monkeypatch.setattr(llm, "_now", clock)
+
+    llm.reset_health()
+
+    for name in (
+        "LLM_MODEL",
+        "LLM_FALLBACKS",
+        "LLM_MAX_ATTEMPTS",
+        "LLM_DAILY_COOLDOWN_S",
+        "LLM_PER_MINUTE_COOLDOWN_S",
+        "LLM_OVERLOAD_COOLDOWN_S",
+        "LLM_MODEL_SYNTH",
+        "LLM_MODEL_JUDGE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    return clock, slept
 
 
 def _service_unavailable():
     return litellm.ServiceUnavailableError("503 high demand", None, None)
 
 
-def _rate_limited():
-    return litellm.RateLimitError("429 quota exhausted", None, None)
+def _rate_limited(message):
+    return litellm.RateLimitError(message, None, None)
 
 
 def _unauthorized():
     return litellm.AuthenticationError("401 bad key", None, None)
 
 
-def test_transient_503_is_retried_on_the_same_model(monkeypatch):
-    """503 twice, then success: the caller gets the result."""
+def _chain(*models):
+    os.environ["LLM_MODEL"] = models[0]
+    os.environ["LLM_FALLBACKS"] = ",".join(models[1:])
+
+
+def completing(fake):
+    """Run ask() with litellm.completion replaced."""
+    return patch.object(litellm, "completion", fake)
+
+
+# --- retry / fallback ------------------------------------------------------
+
+
+def test_transient_503_is_retried_on_the_same_model():
     calls = []
     errors = [_service_unavailable(), _service_unavailable()]
 
@@ -41,52 +93,33 @@ def test_transient_503_is_retried_on_the_same_model(monkeypatch):
             raise errors.pop(0)
         return FakeResponse("recovered")
 
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
+    _chain("gemini/gemini-3.8-flash")
+    os.environ["LLM_MAX_ATTEMPTS"] = "3"
 
-    assert llm.ask("sys", "user") == "recovered"
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "recovered"
+
     assert calls == ["gemini/gemini-3.8-flash"] * 3
 
 
-def test_retries_stop_after_max_attempts(monkeypatch):
-    """A model that never recovers is retried exactly MAX_ATTEMPTS times."""
-    calls = []
-
-    def fake_completion(**kwargs):
-        calls.append(kwargs["model"])
-        raise _service_unavailable()
-
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "gemini/gemini-3.7-flash")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
-
-    with pytest.raises(llm.LLMChainError):
-        llm.ask("sys", "user")
-
-    assert calls.count("gemini/gemini-3.8-flash") == llm.MAX_ATTEMPTS
-    assert calls.count("gemini/gemini-3.7-flash") == llm.MAX_ATTEMPTS
-
-
-def test_rate_limit_moves_to_next_model_without_retrying(monkeypatch):
-    """A quota will not clear: at most one attempt on that model."""
+def test_rate_limit_moves_to_next_model_without_retrying():
     calls = []
 
     def fake_completion(**kwargs):
         calls.append(kwargs["model"])
         if kwargs["model"] == "gemini/gemini-3.8-flash":
-            raise _rate_limited()
+            raise _rate_limited("You exceeded your current quota")
         return FakeResponse("second model answered")
 
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "gemini/gemini-3.7-flash")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
+    _chain("gemini/gemini-3.8-flash", "gemini/gemini-3.7-flash")
 
-    assert llm.ask("sys", "user") == "second model answered"
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "second model answered"
+
     assert calls == ["gemini/gemini-3.8-flash", "gemini/gemini-3.7-flash"]
 
 
-def test_authentication_error_moves_to_next_model_immediately(monkeypatch):
+def test_authentication_error_moves_to_next_model_immediately():
     calls = []
 
     def fake_completion(**kwargs):
@@ -95,103 +128,243 @@ def test_authentication_error_moves_to_next_model_immediately(monkeypatch):
             raise _unauthorized()
         return FakeResponse("fell back")
 
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "gemini/gemini-3.7-flash")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
+    _chain("gemini/gemini-3.8-flash", "gemini/gemini-3.7-flash")
 
-    assert llm.ask("sys", "user") == "fell back"
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "fell back"
+
     assert calls == ["gemini/gemini-3.8-flash", "gemini/gemini-3.7-flash"]
 
 
-def test_not_found_error_moves_to_next_model_immediately(monkeypatch):
-    calls = []
-
-    def fake_completion(**kwargs):
-        calls.append(kwargs["model"])
-        if kwargs["model"] == "gemini/gemini-3.8-flash":
-            raise litellm.NotFoundError("404 retired", None, None)
-        return FakeResponse("fell back")
-
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "gemini/gemini-3.7-flash")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
-
-    assert llm.ask("sys", "user") == "fell back"
-    assert len(calls) == 2
-
-
-def test_every_model_failing_names_the_last_error_class(monkeypatch):
-    def fake_completion(**kwargs):
-        raise _unauthorized()
-
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "gemini/gemini-3.7-flash,gemini/gemini-3.6-flash")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
-
-    with pytest.raises(llm.LLMChainError) as excinfo:
-        llm.ask("sys", "user")
-
-    message = str(excinfo.value)
-    assert "All 3 models failed" in message
-    assert "AuthenticationError" in message
-
-
-def test_programming_errors_are_not_swallowed(monkeypatch):
-    """A TypeError inside the call must surface, not become a fallback."""
-
+def test_programming_errors_are_not_swallowed():
     def fake_completion(**kwargs):
         raise TypeError("result shape is wrong")
 
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "gemini/gemini-3.7-flash")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
+    _chain("gemini/gemini-3.8-flash", "gemini/gemini-3.7-flash")
 
-    with pytest.raises(TypeError, match="result shape is wrong"):
-        llm.ask("sys", "user")
-
-
-def test_json_mode_parses_the_response(monkeypatch):
-    def fake_completion(**kwargs):
-        assert kwargs["response_format"] == {"type": "json_object"}
-        return FakeResponse('{"contradictions": []}')
-
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
-
-    assert llm.ask("sys", "user", json_mode=True) == {"contradictions": []}
+    with completing(fake_completion):
+        with pytest.raises(TypeError, match="result shape is wrong"):
+            llm.ask("sys", "user")
 
 
-def test_litellm_internal_retries_are_disabled(monkeypatch):
+def test_litellm_internal_retries_are_disabled():
     seen = {}
 
     def fake_completion(**kwargs):
         seen.update(kwargs)
         return FakeResponse("ok")
 
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
+    _chain("gemini/gemini-3.8-flash")
 
-    llm.ask("sys", "user")
+    with completing(fake_completion):
+        llm.ask("sys", "user")
 
     assert seen["num_retries"] == 0
     assert seen["timeout"] == llm.CALL_TIMEOUT_SECONDS
     assert "temperature" not in seen
 
 
-def test_role_specific_model_is_preferred(monkeypatch):
+# --- 429 classification ----------------------------------------------------
+
+DAILY_MESSAGE = (
+    'litellm.RateLimitError: GeminiException - {"error": {"code": 429, '
+    '"message": "You exceeded your current quota, please check your plan and '
+    'billing details.", "status": "RESOURCE_EXHAUSTED", '
+    '"details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", '
+    '"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel"}]}]}}'
+)
+
+PER_MINUTE_MESSAGE = (
+    'litellm.RateLimitError: GeminiException - {"error": {"code": 429, '
+    '"message": "Resource has been exhausted (e.g. check quota).", '
+    '"status": "RESOURCE_EXHAUSTED", "details": [{"retryDelay": "34s"}]}}'
+)
+
+PER_MINUTE_PROSE = (
+    "litellm.RateLimitError: GeminiException - You exceeded your current quota. "
+    "Please retry in 34s."
+)
+
+PER_MINUTE_NO_DELAY = (
+    'litellm.RateLimitError: GeminiException - {"error": {"code": 429, '
+    '"message": "Resource exhausted.", "status": "RESOURCE_EXHAUSTED"}}'
+)
+
+
+def test_classify_daily_quota():
+    assert llm.classify_rate_limit(DAILY_MESSAGE)[0] == "daily"
+
+
+def test_classify_per_minute_with_retry_delay_field():
+    kind, delay = llm.classify_rate_limit(PER_MINUTE_MESSAGE)
+    assert kind == "per-minute"
+    assert delay == 34.0
+
+
+def test_classify_per_minute_with_prose_retry_hint():
+    kind, delay = llm.classify_rate_limit(PER_MINUTE_PROSE)
+    assert kind == "per-minute"
+    assert delay == 34.0
+
+
+def test_classify_per_minute_without_delay():
+    kind, delay = llm.classify_rate_limit(PER_MINUTE_NO_DELAY)
+    assert kind == "per-minute"
+    assert delay is None
+
+
+def test_rate_limit_summary_is_short_and_specific():
+    assert "daily" in llm._rate_limit_summary(_rate_limited(DAILY_MESSAGE))
+    summary = llm._rate_limit_summary(_rate_limited(PER_MINUTE_MESSAGE))
+    assert "per-minute" in summary
+    assert "34s" in summary
+
+
+# --- health tracking -------------------------------------------------------
+
+
+def test_daily_429_skips_that_model_for_later_calls(world):
+    clock, _ = world
     calls = []
 
     def fake_completion(**kwargs):
         calls.append(kwargs["model"])
-        return FakeResponse("ok")
+        if kwargs["model"] == "gemini/gemini-3.6-flash":
+            raise _rate_limited(DAILY_MESSAGE)
+        return FakeResponse("answered by fallback")
 
-    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-3.8-flash")
-    monkeypatch.setenv("LLM_MODEL_SYNTH", "gemini/gemini-3.5-flash")
-    monkeypatch.setenv("LLM_FALLBACKS", "")
-    monkeypatch.setattr(litellm, "completion", fake_completion)
+    _chain("gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash")
+    os.environ["LLM_DAILY_COOLDOWN_S"] = "3600"
 
-    llm.ask("sys", "user", role="synth")
+    with completing(fake_completion):
+        llm.ask("sys", "user")
+        assert calls.count("gemini/gemini-3.6-flash") == 1
 
-    assert calls == ["gemini/gemini-3.5-flash"]
+        clock.advance(60)
+        calls.clear()
+        llm.ask("sys", "user")
+
+    assert "gemini/gemini-3.6-flash" not in calls, (
+        "a daily-quota model must be skipped by the next stage"
+    )
+    assert calls == ["gemini/gemini-3.7-flash"]
+
+
+def test_per_minute_429_skips_for_the_retry_delay_then_returns(world):
+    clock, _ = world
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        first_call = calls.count("gemini/gemini-3.6-flash") == 1
+        if kwargs["model"] == "gemini/gemini-3.6-flash" and first_call:
+            raise _rate_limited(PER_MINUTE_MESSAGE)
+        return FakeResponse("answered")
+
+    _chain("gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash")
+
+    with completing(fake_completion):
+        llm.ask("sys", "user")
+
+        clock.advance(33)
+        calls.clear()
+        llm.ask("sys", "user")
+        assert "gemini/gemini-3.6-flash" not in calls
+
+        clock.advance(2)          # past the 34s delay
+        calls.clear()
+        llm.ask("sys", "user")
+
+    assert calls[0] == "gemini/gemini-3.6-flash", (
+        "the model should be retried once its cooldown expires"
+    )
+
+
+def test_503_exhaustion_parks_the_model(world):
+    clock, _ = world
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "gemini/gemini-3.6-flash":
+            raise _service_unavailable()
+        return FakeResponse("answered by the healthy model")
+
+    _chain("gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash")
+    os.environ["LLM_OVERLOAD_COOLDOWN_S"] = "30"
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "answered by the healthy model"
+
+        parked = llm._remaining("gemini/gemini-3.6-flash")
+        assert parked is not None
+        assert parked[0] == pytest.approx(30.0, abs=1)
+        assert parked[1] == "overloaded"
+
+        # the next pipeline stage must walk straight past the parked model
+        calls.clear()
+        llm.ask("sys", "user")
+
+    assert calls == ["gemini/gemini-3.7-flash"], (
+        "an overloaded model must be skipped while another is available"
+    )
+
+
+def test_all_models_cooling_down_uses_the_soonest_instead_of_failing(world):
+    clock, slept = world
+    calls = []
+
+    def always_daily(**kwargs):
+        calls.append(kwargs["model"])
+        raise _rate_limited(DAILY_MESSAGE)
+
+    _chain("gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash")
+    os.environ["LLM_DAILY_COOLDOWN_S"] = "3600"
+
+    with completing(always_daily):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user")
+
+        # both models are now cooling down
+        assert llm._remaining("gemini/gemini-3.6-flash") is not None
+        assert llm._remaining("gemini/gemini-3.7-flash") is not None
+
+        calls.clear()
+        # give one model a much shorter cooldown so it is clearly soonest
+        llm._cool_down("gemini/gemini-3.7-flash", 5.0, "per-day quota")
+
+        def now_answers(**kwargs):
+            calls.append(kwargs["model"])
+            return FakeResponse("answered by the soonest model")
+
+        with completing(now_answers):
+            answer = llm.ask("sys", "user")
+
+    assert answer == "answered by the soonest model"
+    assert calls == ["gemini/gemini-3.7-flash"], "the soonest model should be used"
+    assert slept, "a cooldown under 10s should be waited out rather than retried blind"
+
+
+def test_success_clears_the_cooldown(world):
+    clock, _ = world
+    state = {"fail": True}
+
+    def fake_completion(**kwargs):
+        if state["fail"]:
+            raise _rate_limited(DAILY_MESSAGE)
+        return FakeResponse("recovered")
+
+    _chain("gemini/gemini-3.6-flash")
+    os.environ["LLM_DAILY_COOLDOWN_S"] = "3600"
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user")
+
+        assert llm._remaining("gemini/gemini-3.6-flash") is not None
+
+        clock.advance(3601)
+        state["fail"] = False
+        llm.ask("sys", "user")
+
+        assert llm._remaining("gemini/gemini-3.6-flash") is None

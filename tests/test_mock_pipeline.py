@@ -62,6 +62,18 @@ def types_of(events):
     return [event["type"] for event in events]
 
 
+def cited_numbers(text):
+    """Every evidence number the report cites, in either citation style.
+
+    The real model writes combined groups like "[14, 16, 18, 19]"; the mock also
+    keeps the legacy separate style "[1], [2]" in one place so both are covered.
+    """
+    numbers = []
+    for group in re.findall(r"\[([\d,\s]+)\]", text):
+        numbers.extend(int(part) for part in group.split(",") if part.strip())
+    return numbers
+
+
 def test_rounds_one_produces_the_full_sequence():
     order = types_of(run_sse("What is FastAPI?", 1))
 
@@ -85,10 +97,22 @@ def test_report_has_short_answer_and_a_valid_citation():
     assert "## Short answer" in report
     assert sources, "report should carry its sources"
 
-    cited = [int(n) for n in re.findall(r"\[(\d+)\]", report)]
+    cited = cited_numbers(report)
     assert cited, "report should cite evidence"
     assert all(1 <= n <= evidence_count for n in cited), (
         f"citation outside evidence range (count={evidence_count}): {cited}"
+    )
+
+
+def test_report_exercises_both_citation_styles():
+    events = run_graph("What is FastAPI?", 1)
+    report = next(e["data"] for e in events if e["type"] == "report")
+
+    assert re.search(r"\[\d+,\s*\d+", report), (
+        "expected at least one combined citation like [1, 2, 3]"
+    )
+    assert re.search(r"\[\d+\](?:,|\.)\s*\[\d+\]", report), (
+        "expected at least one separate citation like [1], [2]"
     )
 
 

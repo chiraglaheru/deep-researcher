@@ -70,7 +70,8 @@ def test_graph_runs_end_to_end_with_mocks(monkeypatch):
     assert events[-1]["data"] == "REPORT 3"  # 2 first-round + 1 follow-up
 
 
-@pytest.mark.skipif(not os.getenv("SERPAPI_API_KEY"), reason="no SERPAPI_API_KEY")
+@pytest.mark.live
+@pytest.mark.skipif(not os.getenv("SERPAPI_KEY"), reason="no SERPAPI_KEY")
 def test_serpapi_live():
     """Uses 1 SerpApi credit. Confirms your key and the engine setup work."""
     from backend.research.searcher import search

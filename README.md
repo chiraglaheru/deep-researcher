@@ -178,22 +178,55 @@ curl -N "http://127.0.0.1:8000/api/research?q=What%20is%20FastAPI%3F&rounds=1"
 | `results` | `source`, `query`, `count`, `error` — one per search |
 | `evidence` | `count` of unique evidence collected so far |
 | `gap` | `data` = `{"sufficient","missing","follow_ups"}` |
-| `contradictions` | `data` = list of `{topic,side_a,sources_a,side_b,sources_b}` |
-| `report` | `data` = markdown, `sources` = the evidence used |
+| `retrieval` | `data` = `{attempted,retrieved,full_text,partial,metadata_only,failed,words,chunks,references_followed,sources[]}` |
+| `analysis` | `data` = `{records,dimensions[],sources_summarised,notes[]}` |
+| `contradictions` | `data` = list of `{topic,side_a,sources_a,side_b,sources_b,likely_cause}` |
+| `report` | `data` = markdown, `sources`, `stats`, `retrieval`, `export` |
 | `error` | `message` |
 | `done` | always last |
+
+`retrieval` and `analysis` are additions. `evidence` still reports the count of
+collected search results, so existing clients keep working unchanged.
 
 A failing search does not stop the run: it is reported in that search's `results` event with `error` set. A pipeline-level failure emits `error` followed by `done`.
 
 A typical `rounds=1` run:
 
 ```text
-plan → results ×N → evidence → gap → contradictions → report → done
+plan → results ×N → evidence → retrieval → analysis → gap → contradictions → report → done
 ```
 
-With more rounds, a `gap` reporting `sufficient: false` is followed by another batch of `results` and a second `evidence`.
+With more rounds, a `gap` reporting `sufficient: false` is followed by another batch of `results`, then a second `evidence`/`retrieval`/`analysis`. Evidence accumulates: findings from earlier rounds are never discarded.
+
+### `GET /api/report/download?q=…`
+
+Serves the markdown export for the most recent run of that question as a file
+download (`Content-Disposition: attachment`). 404 if no export exists for the
+question. `/api/report/markdown?q=…` returns the same text as JSON for clients
+that would rather render it themselves. Generated files are also browsable at
+`/exports/<filename>`.
+
+A browser cannot write to the user's disk, so the server writes the file and
+serves it back. Nothing here tries to work around browser restrictions.
 
 ## How it works
+
+The pipeline has two halves. Everything that can be done by parsing is done by
+parsing; the model is only asked for things that need judgement.
+
+```
+question
+  → planner            LLM   sub-questions and searches
+  → search ×N          API   SerpApi: web / news / scholar / github
+  → collect            —     dedupe by URL, flag stale
+  → retrieve           —     download + parse the real documents
+  → analyse            LLM   batched evidence extraction, quote-verified
+  → gap_check          LLM   is there a specific gap worth another search?
+      ├─ gaps → search again (evidence accumulates, nothing is discarded)
+      └─ done ↓
+  → contradiction_check LLM  disagreements between findings
+  → synthesizer        LLM   section-wise deep report
+```
 
 ### Planner — `backend/research/planner.py`
 
@@ -203,21 +236,101 @@ Sends the question to the model and validates the reply: it must be a JSON objec
 
 `search(source, query, n)` maps each source to a SerpApi engine — `google`, `google_news`, `google_scholar`, and `google` with a `site:github.com` prefix — and normalises every row to `{title, url, snippet, date, type, query}`. A source that fails raises, and the worker records it.
 
-### Evidence — `backend/research/collector.py`
+### Retrieval — `backend/research/fetch.py`
 
-Deduplicates by URL with `www.` and trailing slashes normalised away, drops rows without a URL, and marks anything three years or older as stale. `context(limit=40)` renders the numbered block the model sees.
+The search snippet is treated as a pointer, not as the source. Each result URL
+is downloaded and parsed, by strategy:
 
-### Gap check — `backend/research/graph.py`
+| source | method | what you get |
+| --- | --- | --- |
+| `.pdf` | `pypdf` | full text, per page, up to `FETCH_MAX_PAGES` |
+| `arxiv.org` | arXiv API | authoritative title, authors, date, DOI, abstract |
+| `github.com/owner/repo` | GitHub API + raw README | stars, licence, topics, last push, and the README |
+| `text/html` | `lxml` parse | article container only, headings and tables preserved |
+| plain / markdown / json | as-is | text kept verbatim, code indentation intact |
 
-Asks whether the evidence is sufficient. If not, it may request up to three follow-up searches; anything already run is filtered out, and the loop stops at the round limit.
+Every document is graded, and the grade travels with it into the report:
+
+- `full` — the whole usable document was extracted
+- `partial` — paywalled, truncated by a byte/page cap, or JavaScript-rendered
+- `metadata_only` — only the search snippet exists; the document was never read
+- `failed` — robots.txt, HTTP 403/429, network error, or unreachable
+
+Nothing tries to defeat a login wall, a paywall or a `robots.txt` rule. When one
+of those blocks retrieval the source is kept, explicitly downgraded, and the
+reason is recorded rather than the source being silently dropped. Rate-limited
+responses are retried once with backoff. Outbound links are recorded for
+reference discovery.
+
+### Chunking — `backend/research/chunker.py`
+
+Documents are split on their own structure, never truncated wholesale. HTML
+headings are recovered as `#`-prefixed markers during extraction, so the chunker
+can rebuild a section path (`3.2 Attention`) and PDF page breaks are preserved.
+Paragraphs, list items and table rows are the atomic units; a single oversized
+block is split on sentence boundaries. Every chunk keeps `source_url`,
+`source_title`, `source_type`, `publication_date`, `section`, `page` and
+`chunk_id`.
+
+### Relevance — `backend/research/relevance.py`
+
+No model call. Passages are scored by IDF-weighted term overlap against the
+question, with boosts for chunks that cover a named dimension or contain
+quantitative claims, and a penalty for boilerplate. Results are then diversified
+round-robin across sources so one verbose document cannot fill the batch.
+The same module extracts the comparison targets (`React Native, Flutter, native
+Android`) and the analysis dimensions (`performance`, `app size`, …); the
+dimensions decide which sections the report needs.
+
+### Evidence — `backend/research/evidence.py`, `extract.py`
+
+Passages are packed to a character budget so many chunks go into one request, and
+one request yields every finding those chunks support — evidence throughput per
+model call rather than a call per fragment. Each record keeps `claim`, `detail`,
+a verbatim `quote`, its dimension, its targets, full source metadata, the section
+and page it came from, the retrieval grade, a quality tier
+(`strong`/`moderate`/`weak`/`anecdotal`/`speculative`) and its limitations.
+
+Two deterministic guards then run, because a model will happily produce a
+plausible citation for a passage that does not contain it:
+
+- a record naming a chunk that was not in the batch is discarded
+- a quote that cannot be found in its passage is downgraded, then discarded
+
+Records accumulate across gap-check rounds; a later round that finds less never
+discards what an earlier round already established.
+
+### Reference discovery — `backend/research/references.py`
+
+Outbound links and DOIs from documents that were actually read are mined for
+extra leads, filtered deterministically against the question, and capped by
+`REFERENCES_MAX`, `REFERENCES_PER_SOURCE` and a default depth of 1. Social and
+account-wall hosts are skipped. A paper's own citations are worth chasing once;
+chasing them recursively is not.
 
 ### Contradiction check
 
-Asks for claims where sources genuinely disagree, returning an empty list when they do not. Skipped entirely when there is less than two sources.
+Runs over the extracted findings rather than raw snippets, in batches, and is
+instructed to distinguish a genuine contradiction from a difference explained by
+date, configuration, workload or scope. Skipped when there are fewer than two
+findings.
 
 ### Synthesis — `backend/research/report.py`
 
-Writes the report from the numbered evidence only, citing as `[n]`, with sections for the short answer, key findings, disagreements and caveats.
+Section-wise. Reference numbers are assigned deterministically from the evidence
+records *before any model runs*, so a citation in the prose always resolves to a
+real document URL and a fabricated one is structurally impossible. Each section
+is written by its own call given only the evidence relevant to it, which is what
+keeps citations attached to the claim they actually support.
+
+Sections: Executive Summary, Scope and Methodology, one per requested dimension,
+Where the Evidence Conflicts, Scenario Analysis, Decision Framework, Evidence
+Quality and Limitations, Conclusion, then a deterministic Evidence-by-Source
+table and References list. `REPORT_DEPTH=brief` produces a short summary instead.
+
+If a section cannot be written the report says so in a visible note, rather than
+reading as complete when it is not. With no retrieved evidence at all, the
+original single-call report is used unchanged.
 
 ### LLM layer — `backend/research/llm.py`
 
@@ -231,32 +344,54 @@ Every call goes through one `ask()`:
 - failures log a WARNING naming the model, the exception class and a short summary
 - exhausting the chain raises `LLMChainError`, which the SSE layer turns into an `error` event
 
-Each run makes `rounds + 2` model calls: planner, one gap check per non-final round, contradiction check, synthesis.
+A per-process health table parks a model that just returned 429/503 so the next
+pipeline stage does not walk straight back into it, classifying Google's
+`RESOURCE_EXHAUSTED` bodies into per-day and per-minute quotas. If every model is
+cooling down, the soonest is tried anyway rather than failing outright.
+
+`CallBudget` bounds total model calls per run; later stages reserve part of it so
+report writing cannot be starved by extraction.
+
+Model strings must carry a litellm provider prefix (`groq/…`, `openrouter/…`,
+`mistral/…`, `cohere/…`, `nvidia_nim/…`). A bare name fails with "LLM Provider
+NOT provided". The prefix is the provider, not always the vendor.
 
 ## Project structure
 
 ```text
 deep-researcher/
 ├── backend/
-│   ├── main.py                  FastAPI app, CORS, SSE endpoint, static mount
+│   ├── main.py                  FastAPI app, CORS, SSE, export download
 │   ├── research/
 │   │   ├── graph.py             LangGraph pipeline
-│   │   ├── llm.py               retries, fallback chain, model health, mock mode
+│   │   ├── config.py            every tunable, env-driven with defaults
+│   │   ├── fetch.py             document retrieval: pdf / arxiv / github / html
+│   │   ├── chunker.py           structure-aware chunking with provenance
+│   │   ├── relevance.py         deterministic scoring, targets & dimensions
+│   │   ├── extract.py           batched evidence extraction + quote verification
+│   │   ├── evidence.py          Evidence records, quality tiers, statistics
+│   │   ├── references.py        bounded reference discovery
+│   │   ├── report.py            deep section-wise synthesis, reference numbering
+│   │   ├── report_prompts.py    the original single-call prompt (fallback)
+│   │   ├── export.py            markdown export with front matter
+│   │   ├── llm.py               retries, fallback chain, health, budgets, mock
 │   │   ├── planner.py           question → sub-questions
 │   │   ├── searcher.py          SerpApi wrapper, response cache, mock mode
 │   │   ├── collector.py         dedupe, freshness, contradiction detection
-│   │   ├── researcher.py        graph → SSE events
-│   │   └── report.py            report synthesis
-│   ├── tools/                   legacy single-purpose search tools
-│   └── evidence/                legacy evidence collector
+│   │   └── researcher.py        graph → SSE events
+│   ├── tools/                   legacy single-purpose search tools (off-path)
+│   └── evidence/                legacy evidence collector (off-path)
 ├── frontend/
 │   ├── index.html
-│   ├── app.js                   SSE consumer
+│   ├── app.js                   SSE consumer, progress panels, export
+│   ├── markdown.js              escaping markdown renderer, citation anchors
 │   └── style.css
+├── exports/                     generated markdown reports (gitignored)
 ├── tests/
 │   ├── test_sse.py              SSE contract, ordering, clamping, 422
 │   ├── test_llm.py              retry, fallback, cooldowns, 429 classification
 │   ├── test_mock_pipeline.py    whole graph on mocks
+│   ├── test_deep_research.py    fetch, chunking, evidence, relevance, export
 │   ├── test_search_cache.py     search cache
 │   ├── test_pipeline.py         graph wiring, collector, live SerpApi
 │   └── test_{collector,github,news,serpapi}.py
@@ -273,7 +408,8 @@ deep-researcher/
 pytest -q
 ```
 
-111 tests. All but one run offline. `test_serpapi_live` is marked `live` and spends one SerpApi credit; skip it with:
+141 tests. All but one run offline. The retrieval and chunking tests stub the HTTP
+session, so they need no network either. `test_serpapi_live` is marked `live` and spends one SerpApi credit; skip it with:
 
 ```bash
 pytest -q -m "not live"
@@ -311,13 +447,24 @@ LLM_MOCK=1 SEARCH_MOCK=1 uvicorn backend.main:app --reload
 
 ## Known gaps
 
-- `README` aside, there is no CI workflow, so nothing runs the suite on a pull request.
-- The 429 parser matches several spellings of Google's quota id and retry delay because no live 429 was available to test against. A misclassification degrades to the shorter per-minute cooldown rather than failing.
-- The cooldown tracker is per-process: it resets on restart, and multiple uvicorn workers would each rediscover the same failing models independently.
-- There is no blocked-domain list and no relevance filtering, so low-quality sources reach the model.
-- `graph.py` catches broad `Exception` around search calls, which will also mask genuine bugs in that block.
-- The report renders as plain text in the browser, so markdown headings appear literally.
-- The SerpApi cache rarely hits across runs, because the planner is nondeterministic and generates different queries each time. It reliably prevents duplicate calls within a run.
+- **No CI.** A workflow running `pytest -q -m "not live"` on every PR would have
+  caught main shipping a frontend that called a deleted endpoint.
+- **Many sources cannot be retrieved.** In a representative run, roughly a third
+  of results were unreachable — `robots.txt` disallows (Reddit, Facebook,
+  LinkedIn), publisher bot protection (Medium, Indeed), or origin rate limits.
+  Those sources are cited as `metadata_only` and flagged in the report, but no
+  claim should lean on them.
+- **The 429 parser is unverified against a live quota error.** Only a truncated
+  body has been observed, so `_parse_retry_delay` accepts several spellings.
+- **`except Exception` in the fallback path.** Deliberate — one bad source must
+  not kill a run — but it will also swallow genuine bugs.
+- **Markdown is rendered by a hand-written parser** in `frontend/markdown.js`.
+  It escapes everything and handles the constructs the report actually uses, but
+  it is not a full CommonMark implementation.
+- **No authentication.** The export download endpoint serves the last report for
+  a question to anyone who knows the question. Fine locally, not for deployment.
+- **Search is SerpApi-only.** One paid engine, so there is no provider to fall
+  back to if SerpApi is down or rate-limited.
 
 ## Contributing
 

@@ -1,6 +1,7 @@
 """Retry, fallback, and model-health behaviour for backend.research.llm.ask."""
 
 import os
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -368,3 +369,221 @@ def test_success_clears_the_cooldown(world):
         llm.ask("sys", "user")
 
         assert llm._remaining("gemini/gemini-3.6-flash") is None
+
+# --- provider token-limit routing (Groq TPM / request-too-large) -------------
+#
+# Groq answers two different conditions with HTTP 429, which litellm surfaces as
+# RateLimitError. They need different handling:
+#
+#   "Rate limit reached ... TPM: Limit 8000"                  a throttle; clears
+#   "Request too large ... TPM: Limit 8000, Requested 9838"   never clears for
+#                                                              this prompt
+
+GROQ_TPM = ("Rate limit reached for groq model. Please try again later. "
+            "rate_limit_error: Rate limit reached ... tokens per minute (TPM): "
+            "Limit 8000")
+
+GROQ_TOO_LARGE = ("Rate limit reached for groq model: Request too large for groq "
+                  "model. TPM: Limit 8000, Requested 9838")
+
+
+def test_groq_tpm_rate_limit_advances_to_the_next_fallback():
+    """Requirement 1 + 4: a 429 must not be retried on the same model."""
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "groq/openai/gpt-oss-120b":
+            raise _rate_limited(GROQ_TPM)
+        return FakeResponse("fallback answered")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "fallback answered"
+
+    # Exactly one attempt against groq: no retry, straight to the fallback.
+    assert calls == ["groq/openai/gpt-oss-120b",
+                     "openrouter/google/gemma-3-27b-it"]
+
+
+def test_request_too_large_advances_to_the_next_fallback():
+    """Requirement 2: an oversized request is not a throttle; move on."""
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "groq/openai/gpt-oss-120b":
+            raise _rate_limited(GROQ_TOO_LARGE)
+        return FakeResponse("bigger context model answered")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "bigger context model answered"
+
+    assert calls == ["groq/openai/gpt-oss-120b",
+                     "openrouter/google/gemma-3-27b-it"]
+
+
+def test_oversized_request_gets_a_long_cooldown_not_a_throttle_cooldown():
+    """The two 429 shapes must not be treated identically.
+
+    A per-minute cooldown would put groq back in front of the chain after 60s
+    for the very same oversized prompt, producing a slow failure loop.
+    """
+    def fake_completion(**kwargs):
+        raise _rate_limited(GROQ_TOO_LARGE)
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user")
+
+    assert llm._remaining("groq/openai/gpt-oss-120b")[0] >= 900
+
+
+def test_transient_failure_still_retries_the_same_model():
+    """Requirement 3: genuine transients keep their retry behaviour."""
+    calls = []
+    errors = [_service_unavailable(), _service_unavailable()]
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if errors:
+            raise errors.pop(0)
+        return FakeResponse("recovered")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+    os.environ["LLM_MAX_ATTEMPTS"] = "3"
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "recovered"
+
+    assert calls == ["groq/openai/gpt-oss-120b"] * 3
+
+
+def test_all_models_failing_raises_chain_error_naming_the_problem():
+    """Requirement 5: the existing terminal behaviour is preserved."""
+    def fake_completion(**kwargs):
+        raise _rate_limited(GROQ_TOO_LARGE)
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError) as info:
+            llm.ask("sys", "user")
+
+    message = str(info.value)
+    assert "All 2 models failed" in message
+    assert "groq/openai/gpt-oss-120b" in message
+
+
+def test_rate_limited_model_is_not_retried_by_the_next_call(world):
+    """The cooldown has to survive between calls, not just within one.
+
+    Two sequential ask() calls are enough to prove the second one skips groq
+    entirely rather than re-paying a failed round trip.
+    """
+    calls = []
+    fail_groq = {"on": True}
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "groq/openai/gpt-oss-120b" and fail_groq["on"]:
+            raise _rate_limited(GROQ_TPM)
+        return FakeResponse("ok")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        llm.ask("sys", "user")
+        llm.ask("sys", "user")
+
+    # groq is tried once overall, not once per call.
+    assert calls.count("groq/openai/gpt-oss-120b") == 1
+    assert calls == ["groq/openai/gpt-oss-120b",
+                     "openrouter/google/gemma-3-27b-it",
+                     "openrouter/google/gemma-3-27b-it"]
+
+
+def test_concurrent_calls_do_not_all_hammer_a_rate_limited_model():
+    """Requirement 6: parallel callers share one cooldown.
+
+    ask() runs in worker threads (asyncio.to_thread in the graph), so the health
+    table has to keep one rate-limited model out of everyone's chain.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls = []
+    lock = threading.Lock()
+
+    def fake_completion(**kwargs):
+        with lock:
+            calls.append(kwargs["model"])
+        if kwargs["model"] == "groq/openai/gpt-oss-120b":
+            raise _rate_limited(GROQ_TPM)
+        return FakeResponse("ok")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: llm.ask("sys", "user"), range(8)))
+
+    assert results == ["ok"] * 8
+    # One groq attempt across eight concurrent callers, not eight.
+    assert calls.count("groq/openai/gpt-oss-120b") == 1
+
+
+def test_oversized_model_is_skipped_for_large_prompts_but_kept_for_small_ones(world):
+    """The learned ceiling stops the re-probe loop without sidelining groq.
+
+    After the cooldown lapses, groq is usable again for prompts small enough to
+    fit it, and still avoided for prompts at or above the size it rejected.
+    """
+    clock, _ = world
+    big = "x" * (40000 * 4)          # ~40k tokens
+    small = "x" * 100
+
+    def fake_completion(**kwargs):
+        if kwargs["model"] == "groq/openai/gpt-oss-120b":
+            raise _rate_limited(GROQ_TOO_LARGE)
+        return FakeResponse("ok")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        # The fallback succeeds, which is the point: an oversized prompt on the
+        # primary must not fail the call.
+        assert llm.ask("sys", big) == "ok"
+
+        # While the cooldown is live groq is out for any prompt size.
+        models, _ = llm._chain_for_call("default", llm._approx_tokens("sys", small))
+        assert "groq/openai/gpt-oss-120b" not in models
+
+        # Once the cooldown lapses only the ceiling still excludes it.
+        clock.advance(901)
+        models, skipped = llm._chain_for_call("default", llm._approx_tokens("sys", big))
+        assert "groq/openai/gpt-oss-120b" not in models
+        assert any("exceeds its known limit" in reason for _, reason in skipped)
+
+        models, skipped = llm._chain_for_call("default", llm._approx_tokens("sys", small))
+        assert "groq/openai/gpt-oss-120b" in models
+        assert not skipped
+
+
+def test_classification_separates_the_three_rate_limit_kinds():
+    assert llm.classify_rate_limit(GROQ_TOO_LARGE)[0] == "request-too-large"
+    assert llm.classify_rate_limit(GROQ_TPM)[0] == "per-minute"
+    assert llm.classify_rate_limit("Quota exceeded for PerDay")[0] == "daily"
+    assert llm.oversized_request_size(GROQ_TOO_LARGE) == 9838
+    assert llm.oversized_request_size(GROQ_TPM) is None
+
+
+def test_advance_notice_names_the_fallback_and_its_position():
+    chain = ["groq/a", "groq/b", "groq/c"]
+    notice = llm._advance_notice("groq/a", 0, 3, chain, "rate limited")
+    assert notice == "groq/a -> rate limited -> trying fallback 2/3: groq/b"
+    assert "no fallback models left" in llm._advance_notice("groq/c", 2, 3, chain, "x")

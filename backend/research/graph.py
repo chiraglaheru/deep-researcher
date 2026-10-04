@@ -1,23 +1,54 @@
-"""LangGraph orchestration:
-planner -> [search_worker x N in parallel] -> collect -> gap_check --(gaps)--> search_worker ...
-                                                          `--(done)--> contradiction_check -> synthesizer
+"""LangGraph orchestration.
+
+    START -> planner -> [search_worker x N in parallel] -> collect
+          -> retrieve -> analyse -> gap_check --(gaps)--> search_worker ...
+                                              `--(done)--> contradiction_check
+                                                          -> report -> END
+
+``retrieve`` and ``analyse`` are the new stages. Retrieval, extraction and
+reference discovery all run after the first search round and are reused by every
+later round, so the gap-check loop refines the same evidence base instead of
+re-downloading the corpus.
+
+Only search, gap_check, contradiction_check and report use the LLM. Everything
+between them -- downloading, parsing, chunking, relevance scoring, reference
+numbering, the reference table -- is deterministic.
 """
-import asyncio, operator
+import asyncio
+import logging
+import operator
 from typing import Annotated, TypedDict
-from langgraph.graph import StateGraph, START, END
+
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-from .planner import make_plan, SOURCES
-from .searcher import search
+from . import config
+from .chunker import chunk_document
 from .collector import Collector
-from .report import write_report
-from .llm import ask
+from .evidence import statistics
+from .export import save as save_export
+from .extract import (extract_evidence, find_conflicts,
+                      findings_from_contradictions, synthesise_sources)
+from .fetch import FAILED, Fetcher, FULL, METADATA, PARTIAL, snippet_only_doc
+from .llm import CallBudget, ask
+from .planner import SOURCES, make_plan
+from .references import candidates, describe
+from .relevance import diversify, rank, source_context
+from .report import generate_report, status_headline, write_report
+from .searcher import search
+
+log = logging.getLogger(__name__)
+
+# Strength order for a retrieval grade. A source only ever improves as more
+# rounds succeed, so the index keeps the best result seen for each URL.
+_STATUS_RANK = {FAILED: 0, METADATA: 1, PARTIAL: 2, FULL: 3}
 
 GAP_SYS = """You are a research lead. Given the question and evidence so far, decide if more searching
 is needed. Only request searches that fill a SPECIFIC gap: no primary source, one-sided evidence,
 only stale/undated results, missing recent news, or an unanswered sub-question. Return JSON only:
 {"sufficient":true|false,"missing":"what is missing","follow_ups":[{"source":"web|news|scholar|github","query":"..."}]}
-At most 3 follow_ups."""
+At most 3 follow_ups. Prefer queries that would reach primary sources, benchmarks or official
+documentation over general commentary."""
 
 
 class State(TypedDict, total=False):
@@ -34,6 +65,21 @@ class State(TypedDict, total=False):
     contradictions: list
     report: str
 
+    # --- deep-synthesis state ---
+    documents: list                       # FetchedDoc (kept out of streamed output)
+    chunks: list                          # Chunk objects, provenance intact
+    extracted: list                       # Evidence records
+    source_synth: dict
+    retrieval_stats: dict
+    notes: Annotated[list, operator.add]
+    budget: object                        # CallBudget, shared across stages
+    retrieval_index: dict                 # url -> what was retrieved, whole run
+    documents_by_url: dict                # url -> FetchedDoc, best seen
+    status: dict                          # research completion state
+    fetcher: object                      # Fetcher, so the fetch budget is per run
+    evidence_stats: dict
+    export: dict
+
 
 def _col(state) -> Collector:
     col = Collector()
@@ -41,16 +87,37 @@ def _col(state) -> Collector:
     return col
 
 
+def _budget(state) -> CallBudget:
+    budget = state.get("budget")
+    if budget is None:
+        budget = CallBudget()
+    return budget
+
+
 def planner(state):
     plan = make_plan(state["question"])
     pending = [{"source": s["source"], "query": s["query"]}
                for sq in plan.get("subquestions", []) for s in sq["searches"]]
     return {"plan": plan, "pending": pending, "round": 1,
-            "seen": [f'{p["source"]}|{p["query"]}' for p in pending]}
+            "seen": [f'{p["source"]}|{p["query"]}' for p in pending],
+            "budget": _budget(state)}
 
 
 def route(state):
-    """Fan out one parallel worker per pending search, or move on if nothing is pending."""
+    """After the planner: fan out over searches, or start retrieval."""
+    if state.get("pending"):
+        return [Send("search_worker", p) for p in state["pending"]]
+    return "retrieve"
+
+
+def route_after_gap(state):
+    """After the gap check: either chase the gaps or finish and synthesise.
+
+    This has to be a separate router from :func:`route`. Sharing one made an
+    empty ``pending`` list send the graph back to ``retrieve`` forever instead of
+    terminating, because ``retrieve`` and ``analyse`` are re-entered on every
+    pass.
+    """
     if state.get("pending"):
         return [Send("search_worker", p) for p in state["pending"]]
     return "contradiction_check"
@@ -68,14 +135,242 @@ def collect(state):
     return {"evidence": _col(state).list()}
 
 
-def gap_check(state):
+async def retrieve(state):
+    """Download and chunk the real documents behind the search results.
+
+    Reference discovery runs here too: outbound links from documents we actually
+    read are better leads than more blind queries, and the ceiling stops it
+    becoming crawling.
+    """
+    question = state["question"]
+    plan = state.get("plan") or {}
+    notes: list[str] = []
+
+    if not config.fetch_enabled():
+        return {"documents": [], "chunks": [], "retrieval_stats":
+                {"enabled": False, "note": "full-text retrieval is disabled"}, "notes": ["retrieval disabled"]}
+
+    col = _col(state)
+    sources = col.list()
+    urls = [s["url"] for s in sources if s.get("url")]
+
+    # One fetcher per run, held in state, so the fetch budget is per request
+    # rather than shared across the whole process.
+    fetcher = state.get("fetcher") or Fetcher()
+
+    # Retrieval accumulates across gap-check rounds. The index records what was
+    # actually obtained for each URL, so a later round neither re-downloads a
+    # document it already has nor re-reports the run as if it had read nothing.
+    index: dict = dict(state.get("retrieval_index") or {})
+    known_documents: dict = dict(state.get("documents_by_url") or {})
+
+    # Skip anything a previous round already read. Without this, round 2 spends
+    # the remaining fetch budget re-requesting URLs it already has and then
+    # exhausts it, leaving the later rounds unable to retrieve anything.
+    already_read = {url for url, meta in index.items()
+                    if meta.get("status") in ("full", "partial")}
+    todo = [u for u in urls if u not in already_read]
+
+    try:
+        fetched = await asyncio.to_thread(fetcher.fetch_many, todo) if todo else []
+    except Exception as exc:
+        log.warning("retrieval failed: %s", exc)
+        return {"documents": [], "chunks": [], "fetcher": fetcher,
+                "retrieval_stats": {"enabled": True, "error": str(exc)[:200]},
+                "notes": [f"retrieval failed: {type(exc).__name__}"]}
+
+    fetched = fetched[: config.max_sources()]
+    fetched_urls = {d.url for d in fetched} | {d.final_url for d in fetched}
+
+    # Sources we could not read are kept as explicitly-marked metadata-only
+    # evidence rather than dropped, so the report can still reference them while
+    # stating that only the snippet was available.
+    docs = list(fetched)
+    unreadable: list[dict] = []
+    for result in sources:
+        url = result.get("url")
+        if not url or url in fetched_urls or url in already_read:
+            continue
+        unreadable.append(result)
+        docs.append(snippet_only_doc(result))
+
+    # Reference discovery: mine outbound links from what we retrieved, bounded.
+    references_used: list[str] = []
+    if config.references_enabled() and config.references_max() > 0:
+        known = set(index) | {s["url"] for s in sources}
+        leads = [u for u in candidates(docs, question, known) if u not in index]
+        if leads:
+            try:
+                extra = await asyncio.to_thread(fetcher.fetch_many, leads)
+            except Exception:
+                extra = []
+            extra = [d for d in extra if d.usable]
+            if extra:
+                docs.extend(extra)
+                references_used = [d.url for d in extra]
+        notes.append(describe(references_used, max(0, len(leads) - len(references_used))))
+
+    # Fold this round into the per-run index. A status only ever improves, so a
+    # source first seen as a snippet and later fetched properly is upgraded
+    # rather than being stuck reporting the worse grade.
+    for doc in docs:
+        previous = index.get(doc.url, {})
+        if _STATUS_RANK.get(previous.get("status"), -1) <= _STATUS_RANK.get(doc.status, -1):
+            index[doc.url] = {
+                "status": doc.status,
+                "method": doc.method,
+                "words": doc.word_count,
+                "title": doc.title or doc.url,
+                "url": doc.url,
+                "limitation": doc.limitation,
+            }
+        if doc.usable:
+            known_documents[doc.url] = doc
+
+    chunks: list = []
+    for source_id, doc in enumerate(known_documents.values(), 1):
+        chunks.extend(chunk_document(
+            doc.text,
+            source_id=f"S{source_id}",
+            source_url=doc.url,
+            source_title=doc.title,
+            source_type=doc.method,
+            publication_date=doc.date,
+            retrieval_status=doc.status,
+            source_publisher=doc.publisher,
+            authors=doc.authors,
+            doi=doc.doi,
+            pages=doc.pages,
+        ))
+
+    stats = _aggregate_retrieval(index, chunks, references_used)
+    if unreadable:
+        notes.append(f"{len(unreadable)} source(s) could not be retrieved "
+                     f"(robots.txt, paywall, bot protection, rate limit or fetch "
+                     f"budget); they are cited as metadata-only")
+    log.info("retrieval: %d/%d sources readable (%d full), %d words, %d chunks",
+             stats["retrieved"], stats["attempted"], stats["full_text"],
+             stats["total_words"], len(chunks))
+
+    return {"documents": list(known_documents.values()), "chunks": chunks,
+            "fetcher": fetcher, "retrieval_index": index,
+            "documents_by_url": known_documents,
+            "retrieval_stats": stats, "notes": notes}
+
+
+def _aggregate_retrieval(index: dict, chunks: list,
+                         references_used: list[str]) -> dict:
+    """Statistics for the whole run, derived from the accumulated index.
+
+    Every counter here describes the same set of sources: the index is the single
+    record of what was attempted and what was obtained, so the frontend cannot be
+    shown round N's numbers alongside round 1's evidence.
+    """
+    statuses = [meta.get("status") for meta in index.values()]
+    return {
+        "enabled": True,
+        "attempted": len(index),
+        "retrieved": sum(1 for s in statuses if s in ("full", "partial")),
+        "full_text": statuses.count("full"),
+        "partial": statuses.count("partial"),
+        "metadata_only": statuses.count("metadata_only"),
+        "failed": statuses.count("failed"),
+        "total_words": sum(m.get("words", 0) for m in index.values()),
+        "chunks": len(chunks),
+        "references_followed": len(references_used),
+        "sources": [
+            {"status": meta.get("status"), "method": meta.get("method"),
+             "words": meta.get("words", 0), "title": meta.get("title"),
+             "url": meta.get("url"), "limitation": meta.get("limitation")}
+            for meta in index.values()
+        ],
+    }
+
+
+async def analyse(state):
+    """Rank passages deterministically, then extract evidence in batched LLM calls.
+
+    Findings from earlier rounds are always carried forward. Every early exit
+    still merges what already exists, otherwise a round that finds nothing would
+    silently discard evidence an earlier round had already paid for.
+    """
+    question = state["question"]
+    chunks = state.get("chunks") or []
+    notes: list[str] = []
+    previous = state.get("extracted") or []
+
+    def merge(records: list) -> list:
+        if not previous:
+            return records
+        merged: dict = {}
+        for record in previous:
+            merged[f"{record.claim[:80].lower()}|{record.source_url}"] = record
+        for record in records:
+            merged.setdefault(f"{record.claim[:80].lower()}|{record.source_url}",
+                              record)
+        combined = sorted(merged.values(), key=lambda r: (r.rank, -r.confidence))
+        cap = config.max_evidence_records()
+        if len(combined) > cap:
+            notes.append(f"evidence set trimmed from {len(combined)} to {cap} records")
+            combined = combined[:cap]
+        for index, record in enumerate(combined, 1):
+            record.evidence_id = f"E{index}"
+        return combined
+
+    if not chunks or not config.analysis_enabled():
+        notes.append("no retrieved passages available for evidence extraction")
+        return {"extracted": merge([]), "source_synth": {}, "notes": notes}
+
+    budget = _budget(state)
+    scored = diversify(rank(chunks, question, state.get("plan")))
+    if not scored:
+        notes.append("retrieved passages were not relevant enough to extract from")
+        return {"extracted": merge([]), "source_synth": {}, "notes": notes}
+
+    records, extraction_notes = await asyncio.to_thread(
+        extract_evidence, scored, question, state.get("plan"), budget)
+    notes.extend(extraction_notes)
+    records = merge(records)
+
+    synth: dict = {}
+    if records and budget.available():
+        synth = await asyncio.to_thread(synthesise_sources, records, budget)
+
+    log.info("analysis: %d scored passages -> %d evidence records (total %d)",
+             len(scored), len(records) - len(previous), len(records))
+    return {"extracted": records, "source_synth": synth, "notes": notes}
+
+
+async def gap_check(state):
     rnd, seen = state["round"], list(state["seen"])
     if rnd >= state["max_rounds"]:
         return {"gap": {"sufficient": False, "missing": "round limit reached"}, "pending": []}
-    gap = ask(GAP_SYS, f"Question: {state['question']}\n\nEvidence:\n{_col(state).context()}", True)
+
+    records = state.get("extracted") or []
+    context = _col(state).context()
+    if records:
+        # Prefer real extracted evidence over snippets when judging sufficiency.
+        lines = [f"[{r.evidence_id}] {r.claim} ({r.source_title}, {r.source_url})"
+                 for r in records[:60]]
+        context = "\n".join(lines)
+    prompt = (source_context(state["question"], state.get("plan"))
+              + f"\n\nEVIDENCE SO FAR:\n{context}")
+
+    try:
+        gap = await asyncio.to_thread(ask, GAP_SYS, prompt, True)
+    except Exception as exc:
+        log.warning("gap_check failed: %s", exc)
+        return {"gap": {"sufficient": False, "missing": f"gap check unavailable: {exc}"},
+                "pending": [], "round": rnd + 1}
+
+    if not isinstance(gap, dict):
+        gap = {"sufficient": False, "missing": "malformed gap-check response", "follow_ups": []}
+
     new = []
     if not gap.get("sufficient"):
-        for f in gap.get("follow_ups", [])[:3]:
+        for f in (gap.get("follow_ups") or [])[:3]:
+            if not isinstance(f, dict):
+                continue
             key = f'{f.get("source")}|{f.get("query")}'
             if f.get("source") in SOURCES and f.get("query") and key not in seen:
                 new.append({"source": f["source"], "query": f["query"]})
@@ -83,25 +378,67 @@ def gap_check(state):
     return {"gap": gap, "pending": new, "seen": seen, "round": rnd + 1}
 
 
-def contradiction_check(state):
+async def contradiction_check(state):
+    """Prefer disagreements between extracted findings; fall back to snippets."""
+    records = state.get("extracted") or []
+    if len(records) >= 2:
+        conflicts = await asyncio.to_thread(find_conflicts, records, _budget(state))
+        return {"contradictions": conflicts or []}
     return {"contradictions": _col(state).find_contradictions()}
 
 
-def synthesizer(state):
-    return {"report": write_report(state["question"], _col(state), state["contradictions"])}
+async def synthesizer(state):
+    records = list(state.get("extracted") or [])
+    records += findings_from_contradictions(state.get("contradictions") or [], records)
+
+    notes = list(state.get("notes") or [])
+    question, col = state["question"], _col(state)
+    contradictions = state.get("contradictions") or []
+    result = await asyncio.to_thread(
+        generate_report, question, col, contradictions,
+        records, state.get("source_synth") or {}, notes, state.get("plan"), _budget(state))
+    report = result.markdown
+
+    stats = statistics(records) if records else {}
+    export = {}
+    if report:
+        try:
+            export = save_export(question, report, stats,
+                                 state.get("retrieval_stats") or {})
+        except Exception as exc:
+            log.warning("markdown export failed: %s", exc)
+
+    # The completion state is part of the result, not a detail: a report that
+    # lost sections is a partial research run and must be labelled as one.
+    completion = result.as_dict()
+    completion["headline"] = status_headline(result.status, result.missing_sections)
+    if result.status == "partial":
+        log.warning("research PARTIAL: %d section(s) missing (%s)",
+                    len(result.missing_sections),
+                    "; ".join(sorted(set(result.missing_sections))[:4]))
+    elif result.status == "failed":
+        log.error("research FAILED: no usable report could be generated")
+
+    return {"report": report, "evidence_stats": stats, "export": export,
+            "status": completion}
 
 
 def build_graph():
     g = StateGraph(State)
-    for name, fn in [("planner", planner), ("search_worker", search_worker), ("collect", collect),
-                     ("gap_check", gap_check), ("contradiction_check", contradiction_check),
+    for name, fn in [("planner", planner), ("search_worker", search_worker),
+                     ("collect", collect), ("retrieve", retrieve),
+                     ("analyse", analyse), ("gap_check", gap_check),
+                     ("contradiction_check", contradiction_check),
                      ("synthesizer", synthesizer)]:
         g.add_node(name, fn)
     g.add_edge(START, "planner")
-    g.add_conditional_edges("planner", route, ["search_worker", "contradiction_check"])
+    g.add_conditional_edges("planner", route, ["search_worker", "retrieve"])
     g.add_edge("search_worker", "collect")
-    g.add_edge("collect", "gap_check")
-    g.add_conditional_edges("gap_check", route, ["search_worker", "contradiction_check"])
+    g.add_edge("collect", "retrieve")
+    g.add_conditional_edges("gap_check", route_after_gap,
+                            ["search_worker", "contradiction_check"])
+    g.add_edge("retrieve", "analyse")
+    g.add_edge("analyse", "gap_check")
     g.add_edge("contradiction_check", "synthesizer")
     g.add_edge("synthesizer", END)
     return g.compile()

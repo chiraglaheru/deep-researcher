@@ -1,7 +1,21 @@
+# Web layer
 fastapi
 uvicorn
+python-dotenv
+
+# Search
 google-search-results
+
+# Orchestration and models
 litellm
 langgraph
-python-dotenv
-pytest
+
+# Document retrieval and parsing. requests/bs4/lxml arrive via
+# google-search-results, but are listed explicitly because fetch.py imports them
+# directly rather than relying on a transitive dependency.
+requests
+beautifulsoup4
+lxml
+
+# PDF full-text extraction (papers, benchmark reports)
+pypdf

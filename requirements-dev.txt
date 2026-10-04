@@ -1,2 +1,6 @@
 -r requirements.txt
 pytest
+# Executes frontend/markdown.js under test so citation anchors, reference
+# numbering and XSS escaping are covered. tests/test_frontend_render.py skips
+# itself when this is absent.
+dukpy

@@ -4,36 +4,59 @@ const questionInput = document.getElementById("question");
 
 const button = document.getElementById("research-button");
 
+const roundsInput = document.getElementById("rounds");
+
 const errorBox = document.getElementById("error");
 
 const results = document.getElementById("results");
 
-const resultQuestion =
-    document.getElementById("result-question");
+const resultQuestion = document.getElementById("result-question");
 
-const evidenceCount =
-    document.getElementById("evidence-count");
+const evidenceCount = document.getElementById("evidence-count");
 
-const planList =
-    document.getElementById("plan");
+const planList = document.getElementById("plan");
 
-const searchList =
-    document.getElementById("searches");
+const searchList = document.getElementById("searches");
 
-const gapCard =
-    document.getElementById("gap-card");
+const gapCard = document.getElementById("gap-card");
 
-const gapBox =
-    document.getElementById("gap");
+const gapBox = document.getElementById("gap");
 
-const contradictionCard =
-    document.getElementById("contradiction-card");
+const contradictionCard = document.getElementById("contradiction-card");
 
-const contradictionList =
-    document.getElementById("contradictions");
+const contradictionList = document.getElementById("contradictions");
 
-const report =
-    document.getElementById("report");
+const report = document.getElementById("report");
+
+const retrievalStats = document.getElementById("retrieval-stats");
+
+const retrievalNote = document.getElementById("retrieval-note");
+
+const retrievalDetails = document.getElementById("retrieval-details");
+
+const retrievalList = document.getElementById("retrieval-list");
+
+const analysisStats = document.getElementById("analysis-stats");
+
+const analysisNotes = document.getElementById("analysis-notes");
+
+const downloadButton = document.getElementById("download-button");
+
+const copyButton = document.getElementById("copy-button");
+
+const reportWords = document.getElementById("report-words");
+
+const statusBanner = document.getElementById("status-banner");
+
+const statusMissing = document.getElementById("status-missing");
+
+const reportLabel = document.getElementById("report-label");
+
+const reportCard = document.querySelector(".report-card");
+
+let currentQuestion = "";
+
+let currentMarkdown = "";
 
 
 form.addEventListener("submit", async (event) => {
@@ -45,8 +68,11 @@ form.addEventListener("submit", async (event) => {
         return;
     }
 
+    currentQuestion = question;
+    currentMarkdown = "";
+
     errorBox.classList.add("hidden");
-    results.classList.add("hidden");
+    results.classList.remove("hidden");
 
     resetResults();
 
@@ -54,8 +80,10 @@ form.addEventListener("submit", async (event) => {
     button.textContent = "Researching...";
 
     try {
+        const rounds = roundsInput ? roundsInput.value : "2";
+
         const response = await fetch(
-            `/api/research?q=${encodeURIComponent(question)}`
+            `/api/research?q=${encodeURIComponent(question)}&rounds=${encodeURIComponent(rounds)}`
         );
 
         if (!response.ok) {
@@ -124,16 +152,36 @@ function resetResults() {
     contradictionList.textContent = "";
     evidenceCount.textContent = "";
     report.textContent = "";
+    reportWords.textContent = "";
+    retrievalStats.textContent = "";
+    retrievalList.textContent = "";
+    analysisStats.textContent = "";
+    analysisNotes.textContent = "";
+
+    retrievalDetails.classList.add("hidden");
 
     gapBox.textContent = "";
     gapCard.classList.add("hidden");
     contradictionCard.classList.add("hidden");
+
+    downloadButton.classList.add("hidden");
+    copyButton.classList.add("hidden");
+
+    statusBanner.textContent = "";
+    statusBanner.className = "status-banner hidden";
+    statusMissing.textContent = "";
+    statusMissing.classList.add("hidden");
+
+    if (reportCard) {
+        reportCard.classList.remove("is-partial", "is-failed");
+    }
+    if (reportLabel) {
+        reportLabel.textContent = "FINAL REPORT";
+    }
 }
 
 
 function displayEvent(data, question) {
-    results.classList.remove("hidden");
-
     resultQuestion.textContent = question;
 
     if (data.type === "plan") {
@@ -148,6 +196,14 @@ function displayEvent(data, question) {
         evidenceCount.textContent = `${data.count} sources collected`;
     }
 
+    if (data.type === "retrieval") {
+        renderRetrieval(data.data);
+    }
+
+    if (data.type === "analysis") {
+        renderAnalysis(data.data);
+    }
+
     if (data.type === "gap") {
         renderGap(data.data);
     }
@@ -156,27 +212,181 @@ function displayEvent(data, question) {
         renderContradictions(data.data);
     }
 
+    if (data.type === "status") {
+        renderStatus(data.data);
+    }
+
     if (data.type === "report") {
-        report.textContent = data.data || "";
+        if (data.status) {
+            renderStatus(data.status);
+        }
+        renderReport(data);
     }
 
     results.scrollIntoView({
-        behavior: "smooth"
+        behavior: "smooth",
+        block: "start"
     });
+}
+
+
+function statTile(label, value, hint) {
+    const tile = document.createElement("div");
+
+    tile.className = "stat-tile";
+
+    const valueEl = document.createElement("strong");
+
+    valueEl.textContent = String(value);
+
+    const labelEl = document.createElement("span");
+
+    labelEl.textContent = label;
+
+    tile.appendChild(valueEl);
+    tile.appendChild(labelEl);
+
+    if (hint) {
+        const hintEl = document.createElement("small");
+
+        hintEl.textContent = hint;
+        tile.appendChild(hintEl);
+    }
+
+    return tile;
+}
+
+
+function renderRetrieval(data) {
+    if (!data || data.enabled === false) {
+        retrievalNote.textContent =
+            (data && data.note) ||
+            "Full-text retrieval is disabled; only search snippets were used. "
+            + "No document was read, so no finding below rests on document text.";
+
+        return;
+    }
+
+    retrievalNote.textContent =
+        "Documents were downloaded and parsed, not summarised from snippets. "
+        + "Figures are cumulative across the whole research run, so they cover "
+        + "every round, not just the most recent one.";
+
+    retrievalStats.textContent = "";
+
+    retrievalStats.appendChild(
+        statTile(data.retrieved || 0, `${data.attempted || 0} attempted`,
+            "documents fetched")
+    );
+    retrievalStats.appendChild(
+        statTile(data.full_text || 0, "full text", "readable end to end")
+    );
+    retrievalStats.appendChild(
+        statTile(data.partial || 0, "partial", "paywall, truncation or PDF limits")
+    );
+    retrievalStats.appendChild(
+        statTile(data.metadata_only || 0, "metadata only", "no document text")
+    );
+    retrievalStats.appendChild(
+        statTile(formatNumber(data.words || 0), "words", "retrieved in total")
+    );
+    retrievalStats.appendChild(
+        statTile(data.chunks || 0, "chunks", "section-aware passages")
+    );
+
+    if (data.references_followed) {
+        retrievalStats.appendChild(
+            statTile(data.references_followed, "references", "followed from sources")
+        );
+    }
+
+    const sources = data.sources || [];
+
+    if (sources.length) {
+        retrievalList.textContent = "";
+
+        for (const source of sources) {
+            const row = document.createElement("div");
+
+            row.className = `retrieval-row status-${source.status}`;
+
+            const badge = document.createElement("span");
+
+            badge.className = "status-badge";
+            badge.textContent = source.status.replace("_", " ");
+
+            const title = document.createElement("a");
+
+            title.href = source.url || "#";
+            title.target = "_blank";
+            title.rel = "noopener noreferrer";
+            title.textContent = source.title || "(untitled)";
+
+            const meta = document.createElement("small");
+
+            meta.textContent = [
+                source.method,
+                `${formatNumber(source.words || 0)} words`,
+                source.limitation
+            ].filter(Boolean).join(" · ");
+
+            row.appendChild(badge);
+            row.appendChild(title);
+            row.appendChild(meta);
+
+            retrievalList.appendChild(row);
+        }
+
+        retrievalDetails.classList.remove("hidden");
+    }
+}
+
+
+function renderAnalysis(data) {
+    analysisStats.textContent = "";
+
+    if (!data) {
+        return;
+    }
+
+    analysisStats.appendChild(
+        statTile(data.records || 0, "findings", "extracted and verified")
+    );
+
+    const dimensions = data.dimensions || [];
+
+    analysisStats.appendChild(
+        statTile(dimensions.length, "dimensions", "covered by evidence")
+    );
+
+    if (data.sources_summarised) {
+        analysisStats.appendChild(
+            statTile(data.sources_summarised, "sources", "individually assessed")
+        );
+    }
+
+    const notes = data.notes || [];
+
+    analysisNotes.textContent = "";
+
+    for (const note of notes) {
+        const item = document.createElement("li");
+
+        item.textContent = note;
+        analysisNotes.appendChild(item);
+    }
 }
 
 
 function renderPlan(plan) {
     planList.textContent = "";
 
-    const subquestions =
-        (plan && plan.subquestions) || [];
+    const subquestions = (plan && plan.subquestions) || [];
 
     if (!subquestions.length) {
         const li = document.createElement("li");
 
         li.textContent = "No sub-questions were planned.";
-
         planList.appendChild(li);
 
         return;
@@ -290,9 +500,7 @@ function renderGap(gap) {
         for (const followUp of followUps) {
             const li = document.createElement("li");
 
-            li.textContent = `${followUp.source} — ${
-                followUp.query
-            }`;
+            li.textContent = `${followUp.source} — ${followUp.query}`;
 
             list.appendChild(li);
         }
@@ -322,19 +530,31 @@ function renderContradictions(contradictions) {
 
         heading.textContent = item.topic || "Unclear topic";
 
-        const sideA = document.createElement("p");
-
-        sideA.textContent =
-            `${cite(item.sources_a)}: ${item.side_a || ""}`;
-
-        const sideB = document.createElement("p");
-
-        sideB.textContent =
-            `${cite(item.sources_b)}: ${item.side_b || ""}`;
-
         body.appendChild(heading);
-        body.appendChild(sideA);
-        body.appendChild(sideB);
+
+        if (item.side_a) {
+            const sideA = document.createElement("p");
+
+            sideA.innerHTML =
+                "<strong>A:</strong> " + window.escapeHtml(item.side_a);
+            body.appendChild(sideA);
+        }
+
+        if (item.side_b) {
+            const sideB = document.createElement("p");
+
+            sideB.innerHTML =
+                "<strong>B:</strong> " + window.escapeHtml(item.side_b);
+            body.appendChild(sideB);
+        }
+
+        if (item.likely_cause) {
+            const cause = document.createElement("p");
+
+            cause.className = "gap-missing";
+            cause.textContent = `Likely cause: ${item.likely_cause}`;
+            body.appendChild(cause);
+        }
 
         row.appendChild(body);
 
@@ -345,10 +565,130 @@ function renderContradictions(contradictions) {
 }
 
 
-function cite(ids) {
-    if (!Array.isArray(ids) || !ids.length) {
-        return "No citation";
+const STATUS_TEXT = {
+    completed: "COMPLETE REPORT",
+    partial: "PARTIAL REPORT",
+    failed: "REPORT FAILED"
+};
+
+const STATUS_HINT = {
+    completed: "All planned sections were generated.",
+    partial: "This research run did not finish. Treat the report as incomplete.",
+    failed: "No usable report could be generated."
+};
+
+
+function renderStatus(status) {
+    if (!status || !status.status) {
+        return;
     }
 
-    return ids.map((id) => `[${id}]`).join(", ");
+    const state = status.status;
+
+    statusBanner.className = "status-banner state-" + state;
+    statusBanner.textContent = status.headline || STATUS_TEXT[state] || state;
+
+    const hint = document.createElement("small");
+
+    hint.textContent = STATUS_HINT[state] || "";
+    statusBanner.appendChild(hint);
+
+    const missing = status.missing_sections || [];
+
+    if (missing.length) {
+        statusMissing.textContent = "";
+        for (const item of missing) {
+            const li = document.createElement("li");
+            li.textContent = item;
+            statusMissing.appendChild(li);
+        }
+        statusMissing.classList.remove("hidden");
+    } else {
+        statusMissing.textContent = "";
+        statusMissing.classList.add("hidden");
+    }
+
+    statusBanner.classList.remove("hidden");
+
+    // A partial or failed run must not look like an ordinary finished report.
+    if (reportCard) {
+        reportCard.classList.toggle("is-partial", state === "partial");
+        reportCard.classList.toggle("is-failed", state === "failed");
+    }
+    if (reportLabel && state !== "completed") {
+        reportLabel.textContent = (STATUS_TEXT[state] || state) + " — INCOMPLETE";
+    }
+}
+
+
+function renderReport(data) {
+    currentMarkdown = data.data || "";
+
+    // Older runs may return plain text rather than markdown.
+    if (window.renderMarkdown) {
+        report.innerHTML = window.renderMarkdown(currentMarkdown);
+    } else {
+        report.textContent = currentMarkdown;
+    }
+
+    const words = currentMarkdown.split(/\s+/).filter(Boolean).length;
+
+    reportWords.textContent = `${formatNumber(words)} words`;
+
+    const citations = report.querySelectorAll("a.citation").length;
+
+    if (citations) {
+        reportWords.textContent += ` · ${citations} citations`;
+    }
+
+    const sources = data.sources || [];
+
+    if (sources.length) {
+        const urls = sources
+            .map((source) => source.url)
+            .filter(Boolean);
+
+        const unique = new Set(urls);
+
+        evidenceCount.textContent =
+            `${unique.size} sources · ${formatNumber(words)} words`;
+    }
+
+    const exportMeta = data.export || {};
+
+    if (exportMeta.written) {
+        downloadButton.classList.remove("hidden");
+    }
+
+    copyButton.classList.remove("hidden");
+
+    wireDownload();
+}
+
+
+function wireDownload() {
+    downloadButton.onclick = () => {
+        // The browser cannot write to disk, so the server's export file is
+        // served back as a download rather than faked client-side.
+        window.location.href =
+            `/api/report/download?q=${encodeURIComponent(currentQuestion)}`;
+    };
+
+    copyButton.onclick = async () => {
+        try {
+            await navigator.clipboard.writeText(currentMarkdown);
+            copyButton.textContent = "Copied";
+
+            setTimeout(() => {
+                copyButton.textContent = "Copy markdown";
+            }, 1500);
+        } catch (error) {
+            copyButton.textContent = "Copy failed";
+        }
+    };
+}
+
+
+function formatNumber(value) {
+    return Number(value || 0).toLocaleString("en-US");
 }

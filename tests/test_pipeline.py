@@ -9,6 +9,7 @@ import backend.research.collector as C
 import backend.research.graph as G
 import backend.research.planner as P
 from backend.research.collector import Collector, year_of
+from backend.research.report import ReportResult
 from backend.research.researcher import deep_research
 
 load_dotenv()
@@ -44,6 +45,9 @@ def test_graph_runs_end_to_end_with_mocks(monkeypatch):
     monkeypatch.setattr(G, "make_plan", lambda q: {"subquestions": [{"question": "a", "searches": [
         {"source": "web", "query": "rust"}, {"source": "news", "query": "cpp"}]}]})
 
+    # Retrieval is a network stage; this test is about graph topology only.
+    monkeypatch.setattr(G.config, "fetch_enabled", lambda: False)
+
     def fake_search(source, query, n=6):
         return [{"title": f"{source}{query}", "url": f"https://x.com/{source}/{query}",
                  "snippet": "s", "date": "2025", "type": source, "query": query}]
@@ -57,7 +61,11 @@ def test_graph_runs_end_to_end_with_mocks(monkeypatch):
                 "follow_ups": [{"source": "scholar", "query": "bench"}]}
     monkeypatch.setattr(G, "ask", fake_ask)
     monkeypatch.setattr(C, "ask", lambda *a, **k: {"contradictions": []})
-    monkeypatch.setattr(G, "write_report", lambda q, col, c: f"REPORT {len(col.list())}")
+    # The graph asks for a ReportResult now, so it can report how complete the
+    # run was rather than only returning markdown.
+    def fake_generate(question, collector, contradictions, *args, **kwargs):
+        return ReportResult(f"REPORT {len(collector.list())}", "completed")
+    monkeypatch.setattr(G, "generate_report", fake_generate)
 
     async def run():
         return [ev async for ev in deep_research("q", 3)]
@@ -68,6 +76,28 @@ def test_graph_runs_end_to_end_with_mocks(monkeypatch):
     assert types[-1] == "report"
     assert "gap" in types
     assert events[-1]["data"] == "REPORT 3"  # 2 first-round + 1 follow-up
+    assert events[-1]["status"]["status"] == "completed"
+
+
+def test_gap_check_terminates_when_no_follow_ups(monkeypatch):
+    """An empty follow-up list must end the loop, not send it back to retrieve."""
+    monkeypatch.setattr(G, "make_plan", lambda q: {"subquestions": [{"question": "a", "searches": [
+        {"source": "web", "query": "rust"}]}]})
+    monkeypatch.setattr(G.config, "fetch_enabled", lambda: False)
+    monkeypatch.setattr(G, "search", lambda source, query, n=6: [])
+    monkeypatch.setattr(G, "ask", lambda *a, **k: {"sufficient": False, "missing": "x",
+                                                   "follow_ups": []})
+    monkeypatch.setattr(G, "generate_report",
+                        lambda q, col, c, *a, **k: ReportResult("REPORT", "completed"))
+
+    async def run():
+        return [ev async for ev in deep_research("q", 2)]
+
+    events = asyncio.run(run())
+    types = [e["type"] for e in events]
+    assert types.count("retrieval") == 1, "retrieval must not repeat without new searches"
+    assert "contradictions" in types
+    assert types[-1] == "report"
 
 
 @pytest.mark.live

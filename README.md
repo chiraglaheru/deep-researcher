@@ -1,6 +1,6 @@
 # Deep Researcher
 
-An agentic research system. It takes a question, plans sub-questions, searches several sources in parallel, collects and deduplicates evidence, checks whether the evidence is sufficient and searches again if it isn't, looks for disagreements between sources, then synthesizes a cited report. Results stream to the browser as they arrive.
+An agentic research system. It takes a question, plans sub-questions, searches several sources in parallel, collects and deduplicates evidence, checks whether the evidence is sufficient and searches again as needed, and then synthesises a final cited report.
 
 ## Overview
 
@@ -37,7 +37,7 @@ An agentic research system. It takes a question, plans sub-questions, searches s
                     └────────────────────────────────────────┘
 ```
 
-Orchestration is a real [LangGraph](https://github.com/langchain-ai/langgraph) `StateGraph` in `backend/research/graph.py`. Fan-out uses `Send`, and the gap-check loop re-enters the same search node until the evidence is sufficient or the round limit is reached.
+Orchestration is a real [LangGraph](https://github.com/langchain-ai/langgraph) `StateGraph` in `backend/research/graph.py`. Fan-out uses `Send`, and the gap-check loop re-enters the same search graph until the evidence is sufficient or the round limit is reached.
 
 The backend is FastAPI; the frontend is plain HTML/CSS/JS with no build step. FastAPI also serves the frontend, so there is no second server to run.
 
@@ -85,8 +85,8 @@ cp .env.example .env
 ### Credentials
 
 | Variable | Required | Purpose |
-|---|---|---|
-| `GEMINI_API_KEY` | yes | used by litellm for the `gemini/…` model prefix |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | yes | used by `litellm` for the `gemini/...` model prefix |
 | `SERPAPI_KEY` | yes | all four search sources |
 | `GITHUB_TOKEN` | no | raises GitHub API rate limits |
 
@@ -95,7 +95,7 @@ cp .env.example .env
 Calls try models in order and move on when one is unavailable.
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `LLM_MODEL` | `gemini/gemini-3.6-flash` | primary model |
 | `LLM_FALLBACKS` | — | comma-separated fallbacks, tried in order |
 | `LLM_MODEL_DEFAULT` | falls back to `LLM_MODEL` | planner, gap check |
@@ -105,28 +105,28 @@ Calls try models in order and move on when one is unavailable.
 ### Resilience
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `LLM_MAX_ATTEMPTS` | `2` | attempts per model for transient 5xx / connection errors |
 | `LLM_DAILY_COOLDOWN_S` | `3600` | how long to park a model after a daily-quota 429 |
 | `LLM_PER_MINUTE_COOLDOWN_S` | `60` | fallback cooldown when a 429 reports no retry delay |
 | `LLM_OVERLOAD_COOLDOWN_S` | `30` | cooldown after a model exhausts every attempt on 503 |
 
-A per-model health tracker, guarded by a lock and timed with `time.monotonic()`, remembers which models just failed. Cooling models are skipped when the chain is built, so a model that returned 429 two seconds ago is not immediately retried by the next pipeline stage. If every model is cooling, the soonest to recover is still tried rather than failing outright.
+A per-model health tracker, guarded by a lock and timed with `time.monotonic()`, remembers which models just failed. Cooling models are skipped when the chain is built, so a model that returned 429s or 503s does not get retried immediately in the next stage.
 
 ### Caching
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `SEARCH_CACHE_DIR` | — | dev-only SerpApi response cache; unset disables it |
 
-Entries are keyed by a sha1 of source, query and result count. A relative path resolves against the repository root, not the process working directory. Mock mode bypasses the cache.
+Entries are keyed by a sha1 of the source, query and result count. A relative path resolves against the repository root, not the process working directory. Mock mode bypasses the cache.
 
 ### Mock mode
 
-Everything above is optional. With these set, the pipeline runs end to end with **no API calls at all** — useful for frontend work, offline development and tests.
+Everything above is optional. With these set, the pipeline runs end to end with no API calls at all — useful for frontend work, offline development and tests.
 
 | Variable | Purpose |
-|---|---|
+| --- | --- |
 | `LLM_MOCK=1` | return canned replies shaped like each caller's parser |
 | `LLM_MOCK_FAIL` | `planner`, `gap`, `judge`, `synth` or `all` — force a failure |
 | `LLM_MOCK_DELAY_MS` | artificial latency so streaming is visible (default 400) |
@@ -153,14 +153,14 @@ The frontend is served by the same process. To develop the frontend separately, 
 python3 -m http.server 5500 --directory frontend
 ```
 
-The frontend requests `/api/research` with a **relative** path, so it works under either setup.
+The frontend requests `/api/research` with a relative path, so it works under either setup.
 
 ## API
 
 ### `GET /api/research`
 
 | Parameter | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `q` | required | the research question; missing returns 422 |
 | `rounds` | `2` | clamped to `1`–`4` |
 
@@ -173,7 +173,7 @@ curl -N "http://127.0.0.1:8000/api/research?q=What%20is%20FastAPI%3F&rounds=1"
 ### Events
 
 | Type | Payload |
-|---|---|
+| --- | --- |
 | `plan` | `data` = `{"subquestions":[{"question","searches":[{"source","query"}]}]}` |
 | `results` | `source`, `query`, `count`, `error` — one per search |
 | `evidence` | `count` of unique evidence collected so far |
@@ -230,11 +230,11 @@ question
 
 ### Planner — `backend/research/planner.py`
 
-Sends the question to the model and validates the reply: it must be a JSON object with a `subquestions` list, and searches are filtered to known sources with a non-empty query. Invalid shapes are rejected rather than repaired.
+Sends the question to the model and validates the reply: it must be a JSON object with a `subquestions` list, and searches are filtered to known sources with a non-empty query. Invalid shapes are rejected before the search stage begins.
 
 ### Search — `backend/research/searcher.py`
 
-`search(source, query, n)` maps each source to a SerpApi engine — `google`, `google_news`, `google_scholar`, and `google` with a `site:github.com` prefix — and normalises every row to `{title, url, snippet, date, type, query}`. A source that fails raises, and the worker records it.
+`search(source, query, n)` maps each source to a SerpApi engine — `google`, `google_news`, `google_scholar`, and `google` with a `site:github.com` prefix — and normalises every row to `{title, link, snippet, source}`. The results are then sent to the collector.
 
 ### Retrieval — `backend/research/fetch.py`
 
@@ -262,7 +262,7 @@ reason is recorded rather than the source being silently dropped. Rate-limited
 responses are retried once with backoff. Outbound links are recorded for
 reference discovery.
 
-### Chunking — `backend/research/chunker.py`
+Deduplicates by URL with `www.` and trailing slashes normalised away, drops rows without a URL, and marks anything three years or older as stale. `context(limit=40)` renders the numbered block that the model sees when it judges sufficiency and contradictions.
 
 Documents are split on their own structure, never truncated wholesale. HTML
 headings are recovered as `#`-prefixed markers during extraction, so the chunker
@@ -340,8 +340,8 @@ Every call goes through one `ask()`:
 - `RateLimitError` moves to the next model without retrying the same one
 - `NotFoundError`, `AuthenticationError` and `BadRequestError` skip immediately
 - programming errors such as `TypeError` and `KeyError` propagate untouched
-- 60s per-call timeout, with litellm's own retries disabled so they do not multiply
-- failures log a WARNING naming the model, the exception class and a short summary
+- 60s per-call timeout, with `litellm`'s own retries disabled so they do not multiply
+- failures log a `WARNING` naming the model, the exception class and a short summary
 - exhausting the chain raises `LLMChainError`, which the SSE layer turns into an `error` event
 
 A per-process health table parks a model that just returned 429/503 so the next
@@ -421,7 +421,7 @@ A `live` marker on a test tells the autouse `clean_env` fixture to leave `SERPAP
 
 - **Backend** Python, FastAPI, Uvicorn, Pydantic
 - **Orchestration** LangGraph
-- **Models** litellm, Google Gemini
+- **Models** `litellm`, Google Gemini
 - **Search** SerpApi (`google-search-results`)
 - **Frontend** HTML, CSS, vanilla JavaScript — no build step, no framework
 - **Tests** pytest, FastAPI `TestClient`
@@ -447,24 +447,13 @@ LLM_MOCK=1 SEARCH_MOCK=1 uvicorn backend.main:app --reload
 
 ## Known gaps
 
-- **No CI.** A workflow running `pytest -q -m "not live"` on every PR would have
-  caught main shipping a frontend that called a deleted endpoint.
-- **Many sources cannot be retrieved.** In a representative run, roughly a third
-  of results were unreachable — `robots.txt` disallows (Reddit, Facebook,
-  LinkedIn), publisher bot protection (Medium, Indeed), or origin rate limits.
-  Those sources are cited as `metadata_only` and flagged in the report, but no
-  claim should lean on them.
-- **The 429 parser is unverified against a live quota error.** Only a truncated
-  body has been observed, so `_parse_retry_delay` accepts several spellings.
-- **`except Exception` in the fallback path.** Deliberate — one bad source must
-  not kill a run — but it will also swallow genuine bugs.
-- **Markdown is rendered by a hand-written parser** in `frontend/markdown.js`.
-  It escapes everything and handles the constructs the report actually uses, but
-  it is not a full CommonMark implementation.
-- **No authentication.** The export download endpoint serves the last report for
-  a question to anyone who knows the question. Fine locally, not for deployment.
-- **Search is SerpApi-only.** One paid engine, so there is no provider to fall
-  back to if SerpApi is down or rate-limited.
+- `README` aside, there is no CI workflow, so nothing runs the suite on a pull request.
+- The 429 parser matches several spellings of Google's quota id and retry delay because no live 429 was available to test against. A misclassification degrades to the shorter per-minute cooldown instead of the more precise daily backoff.
+- The cooldown tracker is per-process: it resets on restart, and multiple uvicorn workers would each rediscover the same failing models independently.
+- There is no blocked-domain list and no relevance filtering, so low-quality sources reach the model.
+- `graph.py` catches broad `Exception` around search calls, which will also mask genuine bugs in that block.
+- The report renders as plain text in the browser, so markdown headings appear literally.
+- The SerpApi cache rarely hits across runs, because the planner is nondeterministic and generates different queries each time. It reliably prevents duplicate calls within a run.
 
 ## Contributing
 

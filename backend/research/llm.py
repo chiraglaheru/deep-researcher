@@ -9,6 +9,8 @@ import time
 
 import litellm
 
+from .config import CHARS_PER_TOKEN
+
 try:  # litellm's provider exceptions subclass openai's hierarchy, not litellm.APIError
     from openai import OpenAIError as ProviderError
 except ImportError:  # pragma: no cover - openai ships with litellm
@@ -16,7 +18,11 @@ except ImportError:  # pragma: no cover - openai ships with litellm
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini/gemini-3.8-flash"  # any litellm model string works
+# Verified reachable on 2026-10-04. Any litellm model string works, but it must
+# carry a provider prefix and the matching provider key must be present.
+# The default mirrors LLM_MODEL so an unset env var does not silently put a
+# rate-limited provider (Groq free tier) in front of the chain.
+DEFAULT_MODEL = "gemini/gemini-3.5-flash"
 
 MAX_ATTEMPTS = 2
 BACKOFF_BASE_SECONDS = 1.0
@@ -38,6 +44,47 @@ TRANSIENT = (
 
 class LLMChainError(RuntimeError):
     """Every model in the chain failed."""
+
+
+class CallBudget:
+    """Counts pipeline LLM calls and refuses to go past its ceiling.
+
+    Retrieval and chunking are free; model calls are not. Several stages draw
+    from one budget so that a run can never fan out without limit, and so the
+    expensive writing stages get guaranteed calls after the cheap ones.
+    """
+
+    def __init__(self, total: int | None = None, reserve: int = 0):
+        import os as _os
+        from . import config as _config
+        self.total = total if total is not None else _config.total_llm_budget()
+        self.reserve = reserve            # calls held back for later stages
+        self.spent = 0
+        self._os = _os
+
+    @property
+    def remaining(self) -> int:
+        usable = self.total - self.reserve
+        return max(0, usable - self.spent)
+
+    def available(self) -> bool:
+        """True when the *general* pool still has room."""
+        return self.remaining > 0
+
+    def take(self, n: int = 1) -> bool:
+        """Reserve n calls. False when the general pool is exhausted."""
+        if self.remaining < n:
+            return False
+        self.spent += n
+        return True
+
+    def spend(self, n: int = 1) -> None:
+        """Record calls already made, bypassing the general-pool ceiling."""
+        self.spent += n
+
+    def snapshot(self) -> dict:
+        return {"total": self.total, "spent": self.spent,
+                "remaining": self.remaining, "reserve": self.reserve}
 
 
 def _models(role: str) -> list[str]:
@@ -85,6 +132,16 @@ def overload_cooldown_s() -> float:
     return _env_float("LLM_OVERLOAD_COOLDOWN_S", 30.0)
 
 
+def oversized_cooldown_s() -> float:
+    """Cooldown after a provider rejects a request for exceeding its token limit.
+
+    Long on purpose. When a single request is larger than the provider's whole
+    per-minute window, retrying the same prompt against the same model cannot
+    ever succeed, so a short cooldown only produces a repeated failure loop.
+    """
+    return _env_float("LLM_OVERSIZED_COOLDOWN_S", 900.0)
+
+
 # --- model health ---------------------------------------------------------
 #
 # Per-process record of which models are currently unusable, so a model that
@@ -92,12 +149,6 @@ def overload_cooldown_s() -> float:
 
 _health_lock = threading.Lock()
 _cooldowns: dict[str, tuple[float, str]] = {}   # model -> (until, reason)
-
-
-def reset_health() -> None:
-    """Forget every cooldown. Intended for tests."""
-    with _health_lock:
-        _cooldowns.clear()
 
 
 def _cool_down(model: str, seconds: float, reason: str) -> None:
@@ -124,6 +175,46 @@ def _remaining(model: str) -> tuple[float, str] | None:
         return left, reason
 
 
+# --- learned prompt ceilings ------------------------------------------------
+#
+# When a provider rejects a request because it is larger than the provider's own
+# limit, that model cannot serve a prompt of that size, ever. Remembering the
+# size means a later call can skip the model outright instead of paying a failed
+# round trip to rediscover it -- which is what otherwise turns into a slow
+# loop: fail, cool down, retry the same oversized prompt, fail again.
+
+_prompt_ceilings: dict[str, int] = {}
+
+
+def reset_health() -> None:
+    """Forget every cooldown and learned ceiling. Intended for tests."""
+    with _health_lock:
+        _cooldowns.clear()
+        _prompt_ceilings.clear()
+
+
+def _note_ceiling(model: str, requested_tokens: int) -> None:
+    if requested_tokens <= 0:
+        return
+    with _health_lock:
+        previous = _prompt_ceilings.get(model)
+        if previous is None or requested_tokens < previous:
+            _prompt_ceilings[model] = requested_tokens
+
+
+def _ceiling(model: str) -> int | None:
+    with _health_lock:
+        return _prompt_ceilings.get(model)
+
+
+def _exceeds_ceiling(model: str, approx_tokens: int) -> bool:
+    """True when this prompt is known to be too large for this model."""
+    if approx_tokens <= 0:
+        return False
+    ceiling = _ceiling(model)
+    return ceiling is not None and approx_tokens >= ceiling
+
+
 # --- 429 classification ----------------------------------------------------
 #
 # Google's RESOURCE_EXHAUSTED bodies carry a quota id naming the window
@@ -138,6 +229,18 @@ _DELAY_FIELD = re.compile(r'"retryDelay"\s*:\s*"?(\d+)\s*([smh])', re.I)
 _RETRY_IN = re.compile(r"retry in\s+(\d+)\s*([smh])", re.I)
 _DELAY_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0}
 
+# A request the provider will never accept because it is larger than the limit
+# itself. Distinct from a throttle: no amount of waiting fixes this one, because
+# the same prompt will be the same size next time.
+#   "Request too large ... TPM: Limit 8000, Requested 9838"
+_OVERSIZED = re.compile(
+    r"request too large|"
+    r"requested\s+(\d+)\s*tokens?|"
+    r"(?:limit|max(?:imum)?)\s*(?:context|tokens?)\s*(?:length|window)?\s*exceed",
+    re.I)
+_REQUESTED = re.compile(r"requested[:\s]+(\d+)", re.I)
+_LIMIT = re.compile(r"limit[:\s]+(\d+)", re.I)
+
 
 def _parse_retry_delay(message: str) -> float | None:
     for pattern in (_DELAY_FIELD, _RETRY_IN):
@@ -148,48 +251,102 @@ def _parse_retry_delay(message: str) -> float | None:
 
 
 def classify_rate_limit(message: str) -> tuple[str, float | None]:
-    """Return (kind, retry_delay_seconds). kind is 'daily' or 'per-minute'."""
+    """Classify a provider rate-limit body.
+
+    Returns ``(kind, retry_delay_seconds)`` where kind is one of:
+
+    ``daily``           per-day quota exhausted; will not clear for hours
+    ``request-too-large`` the request itself exceeds the provider's limit, so it
+                        can never succeed on this model no matter how long we wait
+    ``per-minute``      an ordinary throughput throttle that will clear
+
+    Order matters: the oversized case must be tested before the per-minute case,
+    because an oversized rejection is often *also* reported through a TPM limit.
+    """
     delay = _parse_retry_delay(message)
     if _DAILY.search(message):
         return "daily", delay
+    if _OVERSIZED.search(message):
+        return "request-too-large", delay
     return "per-minute", delay
+
+
+def oversized_request_size(message: str) -> int | None:
+    """The token count the provider says the request needed, if it said so."""
+    match = _REQUESTED.search(message)
+    return int(match.group(1)) if match else None
 
 
 def _rate_limit_summary(exc: BaseException) -> str:
     kind, delay = classify_rate_limit(str(exc))
+    if kind == "request-too-large":
+        requested = oversized_request_size(str(exc))
+        limit = _LIMIT.search(str(exc))
+        summary = "request exceeds the provider's token limit"
+        if requested:
+            summary += f" (requested {requested}"
+            if limit:
+                summary += f" > limit {limit.group(1)}"
+            summary += ")"
+        return summary
     summary = f"429 {kind} quota"
     if delay is not None:
         summary += f", retry in {delay:.0f}s"
     return summary
 
 
-def _chain_for_call(role: str) -> list[str]:
-    """The chain for this call, with cooling-down models skipped."""
+def _chain_for_call(role: str, approx_tokens: int = 0) -> tuple[list[str], list[tuple[str, str]]]:
+    """The chain for this call, with unusable models removed.
+
+    Returns ``(models, skipped)`` where ``skipped`` records ``(model, reason)``
+    for every model that was dropped, so the caller can explain itself in the
+    log instead of silently shortening the chain.
+    """
     chain = _models(role)
-    active, cooling = [], []
+    active: list[str] = []
+    blocked: list[tuple[str, str]] = []
 
     for model in chain:
-        left = _remaining(model)
-        if left is None:
-            active.append(model)
-        else:
-            seconds, reason = left
-            cooling.append((model, seconds, reason))
-            log.info("skipping %s (cooldown %.0fs: %s)", model, seconds, reason)
-
-    if not active and cooling:
-        # Everything is cooling down. Rather than fail outright, try the model
-        # whose cooldown ends soonest, waiting first if it is nearly ready.
-        model, seconds, reason = min(cooling, key=lambda entry: entry[1])
-        log.info(
-            "all %d models cooling down; trying %s (%.0fs left) anyway",
-            len(cooling), model, seconds,
-        )
-        if seconds <= WAIT_FOR_COOLDOWN_S:
-            sleep(seconds)
+        cooling = _remaining(model)
+        if cooling is not None:
+            seconds, reason = cooling
+            blocked.append((model, f"cooling down {seconds:.0f}s ({reason})"))
+            continue
+        if _exceeds_ceiling(model, approx_tokens):
+            ceiling = _ceiling(model)
+            blocked.append((model,
+                            f"prompt ~{approx_tokens} tok exceeds its known "
+                            f"limit of {ceiling} tok"))
+            continue
         active.append(model)
 
-    return active
+    for model, reason in blocked:
+        log.info("skipping %s (%s)", model, reason)
+
+    if not active and blocked:
+        # Everything is unusable. Rather than fail outright, try whichever model
+        # recovers soonest. A learned-ceiling block does not recover within the
+        # call, so it is only used when nothing is cooling down.
+        recovering: list[tuple[float, str]] = []
+        for model, _ in blocked:
+            left = _remaining(model)
+            if left is not None:
+                recovering.append((left[0], model))
+
+        if recovering:
+            recovering.sort()
+            seconds, model = recovering[0]
+            log.info("all %d models unavailable; %s recovers in %.0fs",
+                     len(blocked), model, seconds)
+            if seconds <= WAIT_FOR_COOLDOWN_S:
+                sleep(seconds)
+        else:
+            model = blocked[0][0]
+            log.warning("all %d models rejected this prompt; trying %s anyway",
+                        len(blocked), model)
+        active.append(model)
+
+    return active, blocked
 
 
 def _backoff(attempt: int) -> float:
@@ -349,22 +506,43 @@ def _mock(kind: str, user: str, json_mode: bool):
     return _mock_reply(kind, user, json_mode)
 
 
+def _approx_tokens(system: str, user: str) -> int:
+    """Cheap prompt-size estimate, used only to compare against learned limits."""
+    return int((len(system) + len(user)) / CHARS_PER_TOKEN)
+
+
+def _advance_notice(model: str, index: int, total: int,
+                    chain: list[str], reason: str) -> str:
+    position = index + 1
+    if index + 1 < len(chain):
+        return (f"{model} -> {reason} -> trying fallback {position + 1}/{total}: "
+                f"{chain[index + 1]}")
+    return f"{model} -> {reason} -> no fallback models left in the chain"
+
+
 def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
     if _mock_enabled():
         return _mock(_mock_kind(system, role), user, json_mode)
 
     kw = {"response_format": {"type": "json_object"}} if json_mode else {}
-    configured = _models(role)
-    chain = _chain_for_call(role)
+    approx = _approx_tokens(system, user)
+    chain, skipped = _chain_for_call(role, approx)
     attempts = max_attempts()
     last: BaseException | None = None
 
-    for model in chain:
+    if skipped:
+        log.debug("model chain for role %s: %d available, %d skipped",
+                  role, len(chain), len(skipped))
+
+    for index, model in enumerate(chain):
+        total = len(chain)
+
         for attempt in range(1, attempts + 1):
             try:
                 r = litellm.completion(
                     model=model,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    messages=[{"role": "system", "content": system},
+                              {"role": "user", "content": user}],
                     timeout=CALL_TIMEOUT_SECONDS,
                     num_retries=0,  # retries are handled here, not by litellm
                     **kw,
@@ -374,41 +552,61 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
                 return json.loads(out) if json_mode else out
 
             except litellm.RateLimitError as exc:
-                # A quota will not clear on a second immediate try: move on,
-                # and keep this model out of later stages until it recovers.
+                # Never retry a rate-limited model: the same request would fail
+                # the same way. Park it for a reason-appropriate period and move
+                # to the next configured model immediately.
                 last = exc
                 kind, delay = classify_rate_limit(str(exc))
-                if kind == "daily":
+                requested = None
+
+                if kind == "request-too-large":
+                    requested = oversized_request_size(str(exc))
+                    _note_ceiling(model, requested or approx)
+                    seconds, reason = oversized_cooldown_s(), "request too large"
+                elif kind == "daily":
                     seconds, reason = daily_cooldown_s(), "per-day quota"
                 else:
                     seconds, reason = (delay or per_minute_cooldown_s()), "per-minute quota"
+
                 _cool_down(model, seconds, reason)
-                log.warning(
-                    "llm %s attempt %d/%d failed %s | %s | cooling down %.0fs",
-                    model, attempt, attempts,
-                    _describe(exc, LOG_MESSAGE_CHARS_RATE_LIMIT),
-                    _rate_limit_summary(exc), seconds,
-                )
+                notice = _advance_notice(model, index, total, chain,
+                                         f"rate limited: {_rate_limit_summary(exc)}")
+                log.warning("llm %s | attempt %d/%d | %s", model, attempt, attempts, notice)
+                if requested:
+                    log.warning("  %s: cooling down %.0fs; this model cannot serve "
+                                "a ~%d token prompt", model, seconds, requested)
+                else:
+                    log.warning("  %s: cooling down %.0fs", model, seconds)
                 break
 
             except ProviderError as exc:
                 last = exc
-                log.warning("llm %s attempt %d/%d failed %s", model, attempt, attempts, _describe(exc))
                 if _retryable(exc) and attempt < attempts:
+                    log.warning("llm %s | attempt %d/%d | %s | retrying same model",
+                                model, attempt, attempts, _describe(exc))
                     sleep(_backoff(attempt))
                     continue
                 if _retryable(exc):
                     # Overloaded across every attempt: park it briefly so the
                     # next pipeline stage does not walk straight back into it.
                     _cool_down(model, overload_cooldown_s(), "overloaded")
-                    log.info(
-                        "cooling down %s for %.0fs after repeated overload",
-                        model, overload_cooldown_s(),
-                    )
+                    notice = _advance_notice(model, index, total, chain,
+                                             "overloaded after all attempts")
+                    log.warning("llm %s | %s | cooling down %.0fs",
+                                model, notice, overload_cooldown_s())
+                else:
+                    notice = _advance_notice(model, index, total, chain,
+                                             f"rejected: {type(exc).__name__}")
+                    log.warning("llm %s | attempt %d/%d | %s", model, attempt,
+                                attempts, notice)
                 break
 
             # Non-provider exceptions (TypeError, KeyError, ...) propagate on purpose.
 
+    detail = "; ".join(f"{m} ({r})" for m, r in skipped) or "none"
+    attempted = ", ".join(chain)
     raise LLMChainError(
-        f"All {len(chain)} models failed; last error {_describe(last)}"
+        f"All {len(chain)} models failed (attempted: {attempted}); "
+        f"last error {_describe(last, LOG_MESSAGE_CHARS_RATE_LIMIT)}. "
+        f"Skipped before this call: {detail}"
     ) from last

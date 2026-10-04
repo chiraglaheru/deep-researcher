@@ -50,6 +50,16 @@
                     required
                 ></textarea>
 
+                <div class="controls">
+                    <label for="rounds">Research depth</label>
+                    <select id="rounds">
+                        <option value="1">Quick (1 round)</option>
+                        <option value="2" selected>Standard (2 rounds)</option>
+                        <option value="3">Deep (3 rounds)</option>
+                        <option value="4">Exhaustive (4 rounds)</option>
+                    </select>
+                </div>
+
                 <button id="research-button" type="submit">
                     Start Research →
                 </button>
@@ -71,6 +81,39 @@
                 <h3 id="result-question"></h3>
 
                 <p id="evidence-count" class="stat"></p>
+            </div>
+
+
+            <!-- Source Retrieval -->
+
+            <div class="card" id="retrieval-card">
+
+                <h4>Source Retrieval</h4>
+
+                <p class="card-note" id="retrieval-note">
+                    Fetching the documents behind each search result.
+                </p>
+
+                <div id="retrieval-stats" class="stats-grid"></div>
+
+                <details id="retrieval-details" class="hidden">
+                    <summary>Sources retrieved</summary>
+                    <div id="retrieval-list"></div>
+                </details>
+
+            </div>
+
+
+            <!-- Evidence Extraction -->
+
+            <div class="card" id="analysis-card">
+
+                <h4>Evidence Extraction</h4>
+
+                <div id="analysis-stats" class="stats-grid"></div>
+
+                <ul id="analysis-notes" class="notes"></ul>
+
             </div>
 
 
@@ -122,8 +165,32 @@
 
             <div class="card report-card">
 
-                <div class="report-label">
-                    FINAL REPORT
+                <div id="status-banner" class="status-banner hidden"></div>
+
+                <ul id="status-missing" class="status-missing hidden"></ul>
+
+                <div class="report-toolbar">
+                    <div class="report-label" id="report-label">
+                        FINAL REPORT
+                    </div>
+
+                    <div class="report-actions">
+                        <span id="report-words" class="stat"></span>
+                        <button
+                            id="download-button"
+                            type="button"
+                            class="ghost-button hidden"
+                        >
+                            Download .md
+                        </button>
+                        <button
+                            id="copy-button"
+                            type="button"
+                            class="ghost-button hidden"
+                        >
+                            Copy markdown
+                        </button>
+                    </div>
                 </div>
 
                 <div id="report" class="report"></div>
@@ -133,6 +200,7 @@
         </section>
 
     </main>
+    <script src="./markdown.js"></script>
     <script src="./app.js"></script>
 </body>
 </html>

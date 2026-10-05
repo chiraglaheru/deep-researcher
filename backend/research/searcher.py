@@ -127,6 +127,16 @@ def _mock_search(source: str, query: str, n: int) -> list[dict]:
 def search(source: str, query: str, n: int = 6) -> list[dict]:
     if _mock_enabled():
         return _mock_search(source, query, n)
+
+    # Throttling sits around the network call rather than around each engine
+    # branch, so every source is paced by the same pacer. Cache hits still cost
+    # a slot, which keeps the rate a ceiling on the provider regardless.
+    from .throttle import get
+    with get("search").slot():
+        return _search_uncapped(source, query, n)
+
+
+def _search_uncapped(source: str, query: str, n: int = 6) -> list[dict]:
     if source == "news":
         rows = _cached_run(source, query, n, {"engine": "google_news", "q": query}).get("news_results", [])[:n]
         return [_item(x.get("title"), x.get("link"), x.get("snippet"),

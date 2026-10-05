@@ -60,6 +60,16 @@
 
                 <p class="controls-note" id="rounds-note" hidden></p>
 
+                <div class="controls">
+                    <label for="throttle-toggle">Request pacing</label>
+                    <select id="throttle-toggle">
+                        <option value="1" selected>Throttled (protect free tiers)</option>
+                        <option value="0">Unthrottled (faster, use paid tiers)</option>
+                    </select>
+                </div>
+
+                <p class="controls-note" id="throttle-note" hidden></p>
+
                 <button id="research-button" type="submit">
                     Start Research →
                 </button>
@@ -113,6 +123,8 @@
                 <div id="analysis-stats" class="stats-grid"></div>
 
                 <ul id="analysis-notes" class="notes"></ul>
+
+                <div id="throttle-stats" class="stats-grid"></div>
 
             </div>
 

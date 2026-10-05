@@ -513,6 +513,12 @@ def _approx_tokens(system: str, user: str) -> int:
     return int((len(system) + len(user)) / CHARS_PER_TOKEN)
 
 
+def _pacer():
+    """The shared throttle, resolved lazily so import order never matters."""
+    from .throttle import get
+    return get("llm")
+
+
 def _advance_notice(model: str, index: int, total: int,
                     chain: list[str], reason: str) -> str:
     position = index + 1
@@ -541,14 +547,17 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
 
         for attempt in range(1, attempts + 1):
             try:
-                r = litellm.completion(
-                    model=model,
-                    messages=[{"role": "system", "content": system},
-                              {"role": "user", "content": user}],
-                    timeout=CALL_TIMEOUT_SECONDS,
-                    num_retries=0,  # retries are handled here, not by litellm
-                    **kw,
-                )
+                # Throttled around the call itself, not the retries: pacing
+                # applies to what the provider sees.
+                with _pacer().slot():
+                    r = litellm.completion(
+                        model=model,
+                        messages=[{"role": "system", "content": system},
+                                  {"role": "user", "content": user}],
+                        timeout=CALL_TIMEOUT_SECONDS,
+                        num_retries=0,  # retries are handled here, not by litellm
+                        **kw,
+                    )
                 out = r.choices[0].message.content
                 _clear_cooldown(model)
                 return json.loads(out) if json_mode else out

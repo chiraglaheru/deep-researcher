@@ -41,3 +41,17 @@ def clean_env(monkeypatch, request):
         for name in ("LLM_MOCK", "SEARCH_MOCK",
                      "LLM_MOCK_FAIL", "SEARCH_MOCK_FAIL"):
             monkeypatch.delenv(name, raising=False)
+
+    # Pacing is a runtime policy, not a correctness one. Leaving it on would add
+    # real seconds to every test that exercises the model path; the tests that
+    # verify throttling itself turn it back on with a fast rate.
+    from backend.research import throttle as throttle_module
+
+    throttle_module.reset_all()
+    for name in ("THROTTLE_LLM", "THROTTLE_SEARCH"):
+        monkeypatch.setenv(name, "0")
+    monkeypatch.setenv("THROTTLE_LLM_PER_MINUTE", "6000")
+    monkeypatch.setenv("THROTTLE_SEARCH_PER_MINUTE", "6000")
+    throttle_module.reset_all()
+    yield
+    throttle_module.reset_all()

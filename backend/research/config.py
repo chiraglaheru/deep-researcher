@@ -231,6 +231,45 @@ def report_quality_floor() -> float:
 
 # --- export ----------------------------------------------------------------
 
+# --- throttling ------------------------------------------------------------
+#
+# Free-tier providers do not fail politely: one 429 can cost the rest of the
+# day. Spacing calls out protects a per-minute budget by construction, and the
+# concurrency ceiling stops two concurrent runs from jointly exceeding it.
+#
+# Turning throttling off is the right choice once you are on paid subscriptions
+# with headroom; until then it trades wall-clock time for not being cut off.
+
+
+def throttle_llm() -> bool:
+    """Pace model calls. On by default while providers are free-tier."""
+    return _bool("THROTTLE_LLM", True)
+
+
+def throttle_llm_per_minute() -> float:
+    """Ceiling on model calls per minute. 0 disables pacing."""
+    return _float("THROTTLE_LLM_PER_MINUTE", 12.0, 0.0, 10_000.0)
+
+
+def throttle_llm_max_concurrent() -> int:
+    """Model calls in flight at once. 1 serialises across concurrent runs too."""
+    return _int("THROTTLE_LLM_MAX_CONCURRENT", 1, 1, 64)
+
+
+def throttle_search() -> bool:
+    """Pace search calls. Off by default: SerpApi is a paid, metered quota."""
+    return _bool("THROTTLE_SEARCH", False)
+
+
+def throttle_search_per_minute() -> float:
+    return _float("THROTTLE_SEARCH_PER_MINUTE", 60.0, 0.0, 10_000.0)
+
+
+def throttle_search_max_concurrent() -> int:
+    """Search already fans out across workers; this caps the total."""
+    return _int("THROTTLE_SEARCH_MAX_CONCURRENT", 4, 1, 64)
+
+
 def export_dir() -> str:
     return os.environ.get("EXPORT_DIR", "exports")
 

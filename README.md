@@ -470,6 +470,47 @@ deep-researcher/
 
 `backend/tools/` and `backend/evidence/` are the pre-LangGraph layer. They are still covered by tests but are no longer on the live path.
 
+## Request pacing
+
+Free-tier providers do not fail politely: one 429 can cost the rest of the day,
+and a tokens-per-minute ceiling is not something you discover cheaply. Spacing
+calls out bounds the total sent in any window by construction.
+
+Two independent knobs, because they solve different problems:
+
+| Setting | Default | Protects against |
+| --- | --- | --- |
+| `THROTTLE_LLM_PER_MINUTE` | 12 | per-minute token/request budgets |
+| `THROTTLE_LLM_MAX_CONCURRENT` | 1 | two runs jointly exceeding one quota |
+
+A single run is already sequential for model calls, so the concurrency ceiling
+matters when two browser tabs run pipelines at once — each run's pacing looks
+correct in isolation while together they blow through a shared limit. Search can
+be paced too (`THROTTLE_SEARCH`), off by default since SerpApi is a metered paid
+plan.
+
+The throttle is a process-wide singleton per kind. The provider's constraint
+belongs to the provider, not to one request, so every run shares it.
+
+**Cost.** For a run needing ~43 model calls:
+
+| Rate | Spacing | Added to a ~20 min run |
+| --- | --- | --- |
+| off | — | 0 |
+| 30/min | 2.0s | ~1.4 min |
+| 20/min | 3.0s | ~2.1 min |
+| 12/min | 5.0s | ~3.6 min |
+
+**Turning it off.** The UI has a *Request pacing* selector — *Throttled* (the
+default, while providers are free-tier) or *Unthrottled*. `GET /api/research`
+also takes `?throttle=0|1`, which applies to that run only and then restores the
+configured default, so one unthrottled request does not silently disable pacing
+for everything after it. `GET /api/throttle` reports the live state, and the
+UI shows how many calls were held back and for how long.
+
+Once you are on paid subscriptions with headroom, either flip the selector or
+set `THROTTLE_LLM=0` and raise `THROTTLE_LLM_PER_MINUTE` to taste.
+
 ## Sub-question planning
 
 A planner asked to split one question often returns the same sub-question twice.

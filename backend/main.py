@@ -56,7 +56,7 @@ app.add_middleware(
 
 
 @app.get("/api/research")
-async def research(q: str, rounds: int = 2):
+async def research(q: str, rounds: int = 2, throttle: int = -1):
     # Clamped against the configured ceiling rather than a hard-coded number, so
     # raising RESEARCH_MAX_ROUNDS_LIMIT is enough to allow deeper runs.
     ceiling = max_rounds_ceiling()
@@ -64,14 +64,47 @@ async def research(q: str, rounds: int = 2):
     if depth != rounds:
         log.warning("rounds=%s clamped to %d (ceiling %d)", rounds, depth, ceiling)
 
+    # -1 means "use the configured default"; 0/1 override it for this run.
+    throttled = None if throttle < 0 else bool(throttle)
+
     async def gen():
+        from backend.research import throttle as throttle_module
+
+        if throttled is not None:
+            throttle_module.apply_config(enabled=throttled)
         try:
             async for ev in deep_research(q, depth):
+                if ev.get("type") in ("report", "status"):
+                    ev["throttle"] = throttle_module.snapshot()
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            # Restore the configured default so one unthrottled request does not
+            # silently disable pacing for every later run.
+            if throttled is not None:
+                throttle_module.apply_config()
+
         yield 'data: {"type":"done"}\n\n'
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/throttle")
+async def throttle_status():
+    """Live throttle state, so the UI can show what pacing is in effect."""
+    from backend.research import throttle as throttle_module
+    from backend.research.config import (throttle_llm, throttle_llm_max_concurrent,
+                                         throttle_llm_per_minute)
+
+    throttle_module.apply_config()
+    return {
+        "configured": {
+            "enabled": throttle_llm(),
+            "per_minute": throttle_llm_per_minute(),
+            "max_concurrent": throttle_llm_max_concurrent(),
+        },
+        "live": throttle_module.snapshot(),
+    }
 
 
 @app.get("/api/config")
@@ -80,7 +113,17 @@ async def public_config():
     from backend.research.config import budget_estimate, total_llm_budget
 
     ceiling = max_rounds_ceiling()
+    from backend.research.config import (throttle_llm, throttle_llm_max_concurrent,
+                                         throttle_llm_per_minute,
+                                         throttle_search, throttle_search_per_minute)
     return {
+        "throttle": {
+            "enabled": throttle_llm(),
+            "per_minute": throttle_llm_per_minute(),
+            "max_concurrent": throttle_llm_max_concurrent(),
+            "search_enabled": throttle_search(),
+            "search_per_minute": throttle_search_per_minute(),
+        },
         "rounds_ceiling": ceiling,
         "rounds_default": min(max_rounds_default(), ceiling),
         "llm_budget": total_llm_budget(),

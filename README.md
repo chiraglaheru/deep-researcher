@@ -57,20 +57,67 @@ The backend is FastAPI; the frontend is plain HTML/CSS/JS with no build step. Fa
 
 ## Requirements
 
-- Python 3.10+ (developed and tested on 3.14.7)
-- A Gemini API key
-- A SerpApi key
-- A GitHub token is optional
+- **Python 3.10 or newer.** This is a hard floor, not a preference: `langgraph`,
+  `litellm` and `fastapi` all declare `Requires-Python >=3.10`. On 3.9 or older
+  pip cannot install them and the test suite dies at import time.
+- A SerpApi key (required for all search)
+- At least one LLM provider key — Gemini, OpenRouter, Cohere or Groq
+- `GITHUB_TOKEN` optional; raises GitHub API rate limits only
 
 ## Setup
 
 ```bash
 git clone <repository-url>
 cd deep-researcher
+
 python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements-dev.txt      # includes requirements.txt + pytest
+cp .env.example .env                     # then fill in your keys
 ```
+
+`requirements-dev.txt` is what you want for development — it pulls in
+`requirements.txt` plus `pytest` and `dukpy` (used to execute
+`frontend/markdown.js` under test).
+
+### Verifying the install
+
+```bash
+python -c "import sys; print(sys.version)"    # must be 3.10+
+pytest -q -m "not live"                       # 184 tests, no network needed
+```
+
+### If you see many errors at once
+
+An `ERROR collecting ...` block per test file, all naming the same missing
+module, means **dependencies were not installed** — not broken code. It looks
+like a wall of failures because pytest reports one collection error per test
+module:
+
+```text
+ERROR collecting tests/test_deep_research.py
+  backend/research/fetch.py:33: in <module>
+    from bs4 import BeautifulSoup
+E   ImportError: No module named 'bs4'
+ERROR collecting tests/test_frontend_render.py
+...
+```
+
+Fix it from the repository root with the virtualenv active:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Common causes:
+
+| Symptom | Cause |
+| --- | --- |
+| `No module named 'bs4'` / `lxml` / `pypdf` | dependencies not installed, or `pip install` run without the venv active |
+| `SyntaxError` or `TypeError: unsupported operand type(s) for \|` on import | Python older than 3.10 |
+| `No module named 'backend'` | pytest invoked from the wrong directory — run it from the repository root, or use `python -m pytest` |
+| Tests pass but every answer is canned | `LLM_MOCK=1` or `SEARCH_MOCK=1` is set in the environment; unset it |
 
 ## Configuration
 
@@ -197,6 +244,27 @@ plan → results ×N → evidence → retrieval → analysis → gap → contrad
 ```
 
 With more rounds, a `gap` reporting `sufficient: false` is followed by another batch of `results`, then a second `evidence`/`retrieval`/`analysis`. Evidence accumulates: findings from earlier rounds are never discarded.
+
+### CORS
+
+The frontend calls the API with a **relative** URL, so it is same-origin and
+CORS does not apply. It only becomes relevant when the page is served from a
+different origin than the API — a separate dev server, or a teammate reaching
+the app over the LAN.
+
+By default any **loopback** origin is allowed on any port
+(`localhost`, `127.0.0.1`, `[::1]`), so a dev server on 5173 or 3000 works
+without configuration. Remote hosts are refused. To allow one:
+
+```bash
+CORS_ORIGINS=http://192.168.1.50:8000,https://research.internal
+```
+
+Set `CORS_ORIGIN_REGEX` to replace the loopback pattern, or to an empty string
+to disable CORS matching entirely.
+
+If you hit a CORS error, check the **browser console**, not the terminal: the
+server logs the request as a normal 200 while the browser blocks the response.
 
 ### `GET /api/report/download?q=…`
 

@@ -144,3 +144,100 @@ def test_missing_q_returns_422(client, monkeypatch):
     install_fake(monkeypatch, [{"type": "report", "data": "x", "sources": []}])
 
     assert client.get("/api/research").status_code == 422
+
+# --- CORS --------------------------------------------------------------------
+#
+# The frontend uses a relative fetch() URL, so it is same-origin and CORS does
+# not normally apply. CORS only bites when the page is served from a different
+# origin than the API -- a dev server on another port, or a teammate on the LAN.
+# The allowlist used to be four hardcoded localhost entries, so anything else
+# was silently refused.
+
+EP = "/api/report/markdown?q=x"
+
+
+def _preflight(client, origin):
+    return client.options(EP, headers={"Origin": origin,
+                                       "Access-Control-Request-Method": "GET"})
+
+
+@pytest.mark.parametrize("origin", [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:5500",      # documented dev-server port
+    "http://127.0.0.1:5500",
+    "http://localhost:5173",      # Vite default
+    "http://127.0.0.1:3000",      # common React dev port
+    "http://localhost:8080",
+])
+def test_loopback_origins_on_any_port_are_allowed(origin):
+    from fastapi.testclient import TestClient
+    from backend import main
+
+    response = _preflight(TestClient(main.app), origin)
+
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.parametrize("origin", [
+    "http://evil.example.com",
+    "https://attacker.test",
+])
+def test_remote_origins_are_still_refused(origin):
+    """Loopback flexibility must not turn into a wildcard."""
+    from fastapi.testclient import TestClient
+    from backend import main
+
+    response = _preflight(TestClient(main.app), origin)
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_extra_origins_are_configurable(monkeypatch):
+    """A LAN address cannot be guessed, so it has to be settable."""
+    from fastapi.testclient import TestClient
+    import importlib
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://192.168.1.50:8000,https://x.test")
+
+    import backend.main as main_module
+    importlib.reload(main_module)
+    try:
+        client = TestClient(main_module.app)
+        response = _preflight(client, "http://192.168.1.50:8000")
+        assert response.headers.get("access-control-allow-origin") == \
+            "http://192.168.1.50:8000"
+    finally:
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        importlib.reload(main_module)
+
+
+def test_static_paths_are_absolute_not_cwd_relative():
+    """Regression: a relative mount breaks whenever cwd is not the repo root.
+
+    ``StaticFiles(directory="frontend")`` resolves against the process working
+    directory, so importing the app from any other directory raised
+    ``RuntimeError: Directory 'frontend' does not exist`` at import time.
+    """
+    from backend.main import _frontend_dir
+
+    frontend = _frontend_dir()
+
+    assert frontend.is_absolute(), "frontend path must be absolute"
+    assert frontend.is_dir(), f"frontend directory missing at {frontend}"
+    assert (frontend / "index.html").is_file()
+    assert (frontend / "app.js").is_file()
+
+
+def test_app_imports_from_any_working_directory(tmp_path, monkeypatch):
+    import importlib
+
+    monkeypatch.chdir(tmp_path)          # simulate a different launch directory
+    import backend.main as main_module
+    importlib.reload(main_module)
+
+    from fastapi.testclient import TestClient
+
+    assert TestClient(main_module.app).get("/").status_code == 200

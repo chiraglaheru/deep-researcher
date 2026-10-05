@@ -1,4 +1,6 @@
 """LLM access with per-model retries and a fallback chain across models."""
+from __future__ import annotations
+
 import json
 import logging
 import os

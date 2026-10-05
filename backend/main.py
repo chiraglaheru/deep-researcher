@@ -1,4 +1,6 @@
 import json
+import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,15 +15,38 @@ from backend.research.researcher import deep_research
 
 app = FastAPI()
 
+
+def _cors_origins() -> list[str]:
+    """Extra origins from CORS_ORIGINS, comma separated.
+
+    Needed as soon as anyone reaches the app by anything other than
+    localhost:8000 -- a LAN address, a container port, or a separate dev server
+    on a different port. None of those are guessable, so they are configurable.
+    """
+    raw = os.environ.get("CORS_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def _cors_origin_regex() -> str | None:
+    """Pattern for loopback origins on any port.
+
+    On by default so a teammate running a dev server on 5173/3000/8080 is not
+    blocked by a hardcoded port list. Loopback only, so this grants nothing to a
+    remote host; set CORS_ORIGINS for anything else.
+    """
+    configured = os.environ.get("CORS_ORIGIN_REGEX")
+    if configured is not None:
+        return configured.strip() or None
+    return r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-    ],
+    allow_origins=_cors_origins(),
+    allow_origin_regex=_cors_origin_regex(),
     allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -76,6 +101,17 @@ def _exports_dir() -> Path:
     return output_dir()
 
 
+def _frontend_dir() -> Path:
+    """Absolute path to the bundled frontend.
+
+    A relative "frontend" resolves against the *process* working directory, so
+    it works when uvicorn is started from the repo root and fails with
+    "Directory 'frontend' does not exist" the moment anything starts the app
+    from anywhere else -- a different shell, an IDE runner, or pytest.
+    """
+    return Path(__file__).resolve().parents[1] / "frontend"
+
+
 # Only mount when the directory exists, so a fresh checkout still boots.
 try:
     _exports_dir().mkdir(parents=True, exist_ok=True)
@@ -83,4 +119,11 @@ try:
 except OSError:
     pass
 
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+_frontend = _frontend_dir()
+if _frontend.is_dir():
+    app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")
+else:                                            # pragma: no cover
+    raise RuntimeError(
+        f"frontend directory not found at {_frontend}. "
+        "The repository looks incomplete -- re-clone it."
+    )

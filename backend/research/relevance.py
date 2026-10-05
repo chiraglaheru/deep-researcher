@@ -38,7 +38,15 @@ _BOILERPLATE = re.compile(
     r"related articles?|table of contents)\b", re.I)
 
 # A quantitative claim is worth more than an opinion, so numeric density counts.
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?\s*(?:%|ms|s\b|fps|mb|gb|kb|k\b|m\b|x\b|×)")
+# Domain-agnostic by construction: a percentage, a decimal, a number carrying a
+# short unit, or a large magnitude. Deliberately not a list of specific units,
+# which would only ever fire for one field.
+_NUMBER = re.compile(
+    r"\d+(?:[.,]\d+)?\s*%"          # a percentage
+    r"|\b\d+(?:[.,]\d+)+\b"         # a decimal or a comma-grouped figure
+    r"|\b\d+\s*[a-z]{1,4}\b"        # a number carrying a short unit
+    r"|\b\d{4,}\b"                  # a large magnitude
+)
 
 _SPLIT_DIMENSIONS = re.compile(r",|\band\b|\bplus\b|;|/")
 
@@ -63,7 +71,7 @@ _ANALYSE_CLAUSE = re.compile(
 
 
 def targets(question: str, limit: int = 8) -> list[str]:
-    """The things being compared: "React Native, Flutter, native Android"."""
+    """The entities the question asks to be compared."""
     text = _strip_question_wrapper(question or "")
     out: list[str] = []
     for part in _SPLIT_DIMENSIONS.split(text):
@@ -112,13 +120,23 @@ def dimensions(question: str, limit: int = 10) -> list[str]:
 
 
 def _strip_question_wrapper(question: str) -> str:
-    """Pull the comparison targets out of 'compare A, B and C for D'."""
+    """Pull the comparison targets out of 'compare A, B and C for D'.
+
+    The purpose clause is cut at a *standalone* preposition only. Matching on
+    word boundaries alone would split compound terms, because a hyphen is a
+    non-word character: "stream-of-consciousness" would lose everything after
+    the "of". Requiring surrounding spaces keeps such names intact.
+    """
     text = question.strip()
     text = re.sub(r"^\s*(please\s+)?(compare|contrast|analyse|analyze|research|"
                   r"investigate|evaluate|explore|what is|how do|explain)\b",
                   "", text, flags=re.I).strip(" :?.-")
-    text = re.sub(r"\b(for|to|in|of|when building|while building)\b.*$", "", text,
-                  flags=re.I) if len(text.split()) > 12 else text
+    if len(text.split()) > 12:
+        # "for", "to", "in", "on", "under", "within", "during", "when", "while"
+        # -- but never "of", which usually belongs to a compound noun.
+        text = re.sub(r" (?:for|to|in|on|under|within|during|when|while)\b.*$", "",
+                      text, flags=re.I)
+        text = re.sub(r"^\s*(?:the\s+)?[\w\s]*?\beffects?\s+of\s+", "", text, flags=re.I)
     return text or question
 
 

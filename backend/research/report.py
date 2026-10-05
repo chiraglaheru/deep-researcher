@@ -99,14 +99,15 @@ Structure the section as analysis, not as a list:
   situations in which the ranking would change.
 - Close with what the evidence does and does not settle about this dimension.
 
-Where the dimension involves measurement, treat it as multidimensional. For
-performance that means considering startup time, frame rendering, UI latency,
-CPU and memory use, runtime and binary overhead, bridge or communication
-architecture, graphics-heavy and CPU-heavy workloads, background and networking
-workloads, energy use, and platform API integration -- not one headline number.
-Where it involves cost, treat initial development, maintenance, dependency and
-framework upgrades, OS version churn, testing burden, staffing, specialist
-hiring, technical debt and CI infrastructure as separate costs.
+Where the dimension involves measurement, treat it as multidimensional rather
+than as one headline number. Decide for yourself which sub-metrics matter in
+this domain -- work out what the dimension is actually made of, then say which
+components you can evidence and which you cannot. Wherever a figure appears,
+state what was measured, on what, under what conditions, with what method, and
+whether it generalises beyond the case that was measured.
+
+Where the dimension involves cost, separate the one-off cost from the recurring
+cost, and separate the components of each rather than quoting a single total.
 
 If evidence for part of the dimension is thin or missing, analyse what you have
 and state plainly what is missing.
@@ -116,10 +117,11 @@ and state plainly what is missing.
 CONFLICT_SYSTEM = f"""You write the section reconciling conflicting evidence.
 
 For each disagreement present both positions, name the sources, then compare
-them on methodology, date, population or sample, workload, hardware, build
-configuration and incentives. Offer the most likely reasons for the
-disagreement. Say which result is more generalisable and why, or state that the
-evidence does not resolve it.
+them on everything that could explain the gap: methodology, date, population or
+sample, scale, configuration, definitions, and the incentives of whoever
+produced each result. Offer the most likely reasons for the disagreement. Say
+which result is more generalisable and why, or state that the evidence does not
+resolve it.
 
 Do not silently prefer the position that fits a tidy conclusion.
 
@@ -127,14 +129,15 @@ Do not silently prefer the position that fits a tidy conclusion.
 
 SCENARIO_SYSTEM = f"""You write the scenario analysis section of a research report.
 
-For each scenario, state what the constraints imply for the trade-offs that
-actually decide the outcome. Cover a spread of situations such as: a small team
-or solo developer; a large engineering organisation; a graphics-heavy app; a
-consumer app with heavy networking; an app needing deep platform integration;
-Android-only versus cross-platform delivery; and teams that already have
-expertise in one of the technologies.
+Derive the scenarios from THIS question rather than from any fixed template.
+Identify the options being compared and the constraints that actually vary
+between real cases in this domain, then write scenarios that differ along those
+axes -- for example scale and resources, degree of specialisation, sensitivity
+to a particular risk, the audience or population affected, or the time horizon
+over which the decision plays out. Ignore any example that does not fit.
 
-For each scenario, give a reasoned recommendation grounded in cited evidence,
+For each scenario, state what the constraints imply for the trade-offs that
+decide the outcome, give a reasoned recommendation grounded in cited evidence,
 and name the condition that would flip it. Do not produce a universal ranking.
 
 {DISCIPLINE}"""
@@ -339,32 +342,49 @@ def _write_section(system: str, question: str, heading: str, instruction: str,
         return ""
 
 
+# Analytic guidance keyed on a dimension word. Deliberately about METHOD rather
+# than domain content: it teaches the model which distinctions matter without
+# assuming what the question is about. Anything named here that would only make
+# sense for one domain belongs in the question, not in the code.
 _DIMENSION_GUIDANCE = {
-    "performance": ("Analyse multidimensional evidence: startup, frame rendering, UI latency, "
-                    "FPS, CPU and memory, runtime and binary overhead, communication "
-                    "architecture, and behaviour under graphics-heavy, CPU-heavy, background "
-                    "and networking workloads."),
-    "developer productivity": ("Analyse development speed, hot reload, UI work, debugging, "
-                               "testing, tooling, learning curve, library availability, native "
-                               "integration, code reuse, onboarding and deployment workflow."),
-    "ecosystem maturity": ("Separate ecosystem size from ecosystem quality from ecosystem "
-                           "activity. Cover official maturity, packages, community, docs, "
-                           "third-party libraries, maintenance, native API coverage, release "
-                           "stability, upgrade and migration risk, and long-term viability."),
-    "ai tooling": ("Distinguish documented tooling from observed adoption from analysis from "
-                  "speculation. Cover assistants, code and UI generation, test and "
-                  "documentation generation, agentic workflows and framework-specific tooling."),
-    "app size": ("Distinguish APK from AAB, compressed download from installed size, debug "
-                 "from release builds, architecture-specific builds, minimal from realistic "
-                 "production apps. Explain why apparently contradictory figures can both hold."),
-    "maintenance costs": ("Separate initial build cost from ongoing cost. Cover dependency and "
-                          "framework upgrades, OS version churn, native API changes, testing "
-                          "burden, staffing and specialist hiring, technical debt, CI "
-                          "infrastructure and migration cost. State assumptions behind any figure."),
-    "hiring demand": ("Distinguish raw job volume, share of postings, talent-pool size, hiring "
-                      "difficulty, salary and long-term demand. Name the data that supports any "
-                      "claim rather than asserting that one option has more jobs."),
+    "performance": ("Treat as multidimensional, not as one headline number. Work out "
+                    "what the dimension is actually made of in this domain, then say "
+                    "which components you can evidence and which you cannot. For every "
+                    "figure state what was measured, on what, under what conditions, with "
+                    "what method, and whether it generalises beyond the measured case."),
+    "developer productivity": ("Separate the speed of producing a first version from the "
+                               "speed of iterating on it, and both from the quality of the "
+                               "result over time. Cover the feedback loop, the toolchain, "
+                               "debugging and verification, and the cost of bringing a new "
+                               "person up to speed."),
+    "ecosystem maturity": ("Separate size from quality from activity -- they are not "
+                           "interchangeable. Cover first-party support, third-party breadth, "
+                           "documentation, maintenance and abandonment risk, stability of "
+                           "releases, upgrade and migration risk, and indicators of "
+                           "long-term viability."),
+    "ai tooling": ("Separate documented capability from observed adoption from analysis "
+                   "from speculation. State plainly whether any effect on outcomes is "
+                   "measured or merely inferred, and never present a prediction as a "
+                   "finding."),
+    "app size": ("Establish the measurement basis before comparing any figure: transfer "
+                 "size versus installed size, compressed versus uncompressed, minimal "
+                 "example versus realistic artifact, per-platform versus aggregate, and "
+                 "which build variant was measured. Explain why apparently contradictory "
+                 "figures can both be correct."),
+    "maintenance costs": ("Separate the one-off cost from the recurring cost, and break "
+                          "each into components rather than quoting a single total. Name "
+                          "the assumptions behind every figure and refuse to present a "
+                          "generic industry estimate as a precise cost."),
+    "hiring demand": ("Distinguish raw posting volume, share of postings, talent-pool size, "
+                      "hiring difficulty and compensation -- these are different claims "
+                      "needing different data. Name the evidence behind any statement "
+                      "rather than asserting that one option simply has more demand."),
 }
+_FALLBACK_GUIDANCE = (
+    "Analyse this dimension thoroughly: analyse each option separately, compare them "
+    "directly, and state what the evidence does and does not settle. Work out what this "
+    "dimension means in the context of the question rather than assuming a fixed reading."
+)
 
 
 class ReportResult:
@@ -526,9 +546,7 @@ def generate_report(question, collector, contradictions,
             continue
         planned += 1
         guidance = _DIMENSION_GUIDANCE.get(dimension.lower().strip(),
-                                            "Analyse this dimension thoroughly, "
-                                            "analysing each option separately and then "
-                                            "comparing them directly.")
+                                            _FALLBACK_GUIDANCE)
         section = compose(DIMENSION_SYSTEM, dimension.title(), guidance, relevant,
                           700 if is_deep else 300)
         if section:

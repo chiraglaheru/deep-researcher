@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep-researcher"
+version = "2.0.0"
+description = "Agentic research system: parallel search, full-text retrieval, traceable synthesis"
+readme = "README.md"
+# langgraph, litellm and fastapi all declare Requires-Python >=3.10, so anything
+# below that cannot install the dependency set at all.
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["backend", "backend.research"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+# Location-independent imports: put the repository root on sys.path rather than
+# depending on the invocation directory.
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "live: hits a real paid API (SerpApi); needs SERPAPI_KEY and network",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

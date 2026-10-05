@@ -1,4 +1,7 @@
 import json
+import logging
+import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -9,32 +12,123 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.research.config import max_rounds as max_rounds_default
+from backend.research.config import rounds_ceiling as max_rounds_ceiling
 from backend.research.researcher import deep_research
+
+log = logging.getLogger(__name__)
 
 app = FastAPI()
 
+
+def _cors_origins() -> list[str]:
+    """Extra origins from CORS_ORIGINS, comma separated.
+
+    Needed as soon as anyone reaches the app by anything other than
+    localhost:8000 -- a LAN address, a container port, or a separate dev server
+    on a different port. None of those are guessable, so they are configurable.
+    """
+    raw = os.environ.get("CORS_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def _cors_origin_regex() -> str | None:
+    """Pattern for loopback origins on any port.
+
+    On by default so a teammate running a dev server on 5173/3000/8080 is not
+    blocked by a hardcoded port list. Loopback only, so this grants nothing to a
+    remote host; set CORS_ORIGINS for anything else.
+    """
+    configured = os.environ.get("CORS_ORIGIN_REGEX")
+    if configured is not None:
+        return configured.strip() or None
+    return r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-    ],
+    allow_origins=_cors_origins(),
+    allow_origin_regex=_cors_origin_regex(),
     allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 
 @app.get("/api/research")
-async def research(q: str, rounds: int = 2):
+async def research(q: str, rounds: int = 2, throttle: int = -1):
+    # Clamped against the configured ceiling rather than a hard-coded number, so
+    # raising RESEARCH_MAX_ROUNDS_LIMIT is enough to allow deeper runs.
+    ceiling = max_rounds_ceiling()
+    depth = max(1, min(rounds, ceiling))
+    if depth != rounds:
+        log.warning("rounds=%s clamped to %d (ceiling %d)", rounds, depth, ceiling)
+
+    # -1 means "use the configured default"; 0/1 override it for this run.
+    throttled = None if throttle < 0 else bool(throttle)
+
     async def gen():
+        from backend.research import throttle as throttle_module
+
+        if throttled is not None:
+            throttle_module.apply_config(enabled=throttled)
         try:
-            async for ev in deep_research(q, max(1, min(rounds, 4))):
+            async for ev in deep_research(q, depth):
+                if ev.get("type") in ("report", "status"):
+                    ev["throttle"] = throttle_module.snapshot()
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            # Restore the configured default so one unthrottled request does not
+            # silently disable pacing for every later run.
+            if throttled is not None:
+                throttle_module.apply_config()
+
         yield 'data: {"type":"done"}\n\n'
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/throttle")
+async def throttle_status():
+    """Live throttle state, so the UI can show what pacing is in effect."""
+    from backend.research import throttle as throttle_module
+    from backend.research.config import (throttle_llm, throttle_llm_max_concurrent,
+                                         throttle_llm_per_minute)
+
+    throttle_module.apply_config()
+    return {
+        "configured": {
+            "enabled": throttle_llm(),
+            "per_minute": throttle_llm_per_minute(),
+            "max_concurrent": throttle_llm_max_concurrent(),
+        },
+        "live": throttle_module.snapshot(),
+    }
+
+
+@app.get("/api/config")
+async def public_config():
+    """Limits the browser needs in order to offer valid choices."""
+    from backend.research.config import budget_estimate, total_llm_budget
+
+    ceiling = max_rounds_ceiling()
+    from backend.research.config import (throttle_llm, throttle_llm_max_concurrent,
+                                         throttle_llm_per_minute,
+                                         throttle_search, throttle_search_per_minute)
+    return {
+        "throttle": {
+            "enabled": throttle_llm(),
+            "per_minute": throttle_llm_per_minute(),
+            "max_concurrent": throttle_llm_max_concurrent(),
+            "search_enabled": throttle_search(),
+            "search_per_minute": throttle_search_per_minute(),
+        },
+        "rounds_ceiling": ceiling,
+        "rounds_default": min(max_rounds_default(), ceiling),
+        "llm_budget": total_llm_budget(),
+        "budget_estimate": {str(r): budget_estimate(r) for r in range(1, ceiling + 1)},
+    }
 
 
 @app.get("/api/report/download")
@@ -76,6 +170,17 @@ def _exports_dir() -> Path:
     return output_dir()
 
 
+def _frontend_dir() -> Path:
+    """Absolute path to the bundled frontend.
+
+    A relative "frontend" resolves against the *process* working directory, so
+    it works when uvicorn is started from the repo root and fails with
+    "Directory 'frontend' does not exist" the moment anything starts the app
+    from anywhere else -- a different shell, an IDE runner, or pytest.
+    """
+    return Path(__file__).resolve().parents[1] / "frontend"
+
+
 # Only mount when the directory exists, so a fresh checkout still boots.
 try:
     _exports_dir().mkdir(parents=True, exist_ok=True)
@@ -83,4 +188,11 @@ try:
 except OSError:
     pass
 
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+_frontend = _frontend_dir()
+if _frontend.is_dir():
+    app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")
+else:                                            # pragma: no cover
+    raise RuntimeError(
+        f"frontend directory not found at {_frontend}. "
+        "The repository looks incomplete -- re-clone it."
+    )

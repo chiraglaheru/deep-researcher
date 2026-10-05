@@ -6,6 +6,14 @@ const button = document.getElementById("research-button");
 
 const roundsInput = document.getElementById("rounds");
 
+const roundsNote = document.getElementById("rounds-note");
+
+const throttleToggle = document.getElementById("throttle-toggle");
+
+const throttleNote = document.getElementById("throttle-note");
+
+const throttleStats = document.getElementById("throttle-stats");
+
 const errorBox = document.getElementById("error");
 
 const results = document.getElementById("results");
@@ -54,9 +62,120 @@ const reportLabel = document.getElementById("report-label");
 
 const reportCard = document.querySelector(".report-card");
 
+const ROUND_LABELS = {
+    1: "Quick",
+    2: "Standard",
+    3: "Deep",
+    4: "Exhaustive",
+};
+
 let currentQuestion = "";
 
 let currentMarkdown = "";
+
+
+// The round ceiling is a server setting, so the options are fetched rather than
+// hardcoded here. Without this the UI silently caps at whatever it shipped with.
+async function loadRoundOptions() {
+    if (!roundsInput) {
+        return;
+    }
+    const fallback = [1, 2, 3, 4];
+    let cfg = { rounds_ceiling: 4, rounds_default: 2, budget_estimate: {} };
+    try {
+        const response = await fetch("/api/config");
+        if (response.ok) {
+            cfg = await response.json();
+        }
+    } catch (error) {
+        // Backend unreachable: fall back to the conservative set.
+    }
+
+    const ceiling = Math.max(1, Math.min(cfg.rounds_ceiling || 4, 10));
+    roundsInput.textContent = "";
+    for (let n = 1; n <= ceiling; n += 1) {
+        const option = document.createElement("option");
+        option.value = String(n);
+        option.textContent =
+            (ROUND_LABELS[n] || `Round ${n}`) + ` (${n} round${n > 1 ? "s" : ""})`;
+        roundsInput.appendChild(option);
+    }
+    const preferred = Math.min(cfg.rounds_default || 2, ceiling);
+    roundsInput.value = String(preferred);
+
+    if (roundsNote) {
+        const estimates = cfg.budget_estimate || {};
+        const parts = [];
+        for (let n = 2; n <= Math.min(ceiling, 4); n += 1) {
+            if (estimates[String(n)]) {
+                parts.push(`${n} rounds ≈ ${estimates[String(n)]} model calls`);
+            }
+        }
+        if (parts.length) {
+            roundsNote.textContent =
+                "Deeper runs cost more model calls per round: " +
+                parts.join(", ") +
+                ". The budget scales automatically unless RESEARCH_LLM_BUDGET is set.";
+            roundsNote.hidden = false;
+        }
+    }
+}
+
+function renderThrottleStats(payload) {
+    if (!throttleStats || !payload) {
+        return;
+    }
+    const live = payload.llm || payload;
+    throttleStats.textContent = "";
+
+    const tiles = [
+        [live.enabled ? "on" : "off", "pacing", "model calls"],
+        [live.per_minute + "/min", "rate", "configured ceiling"],
+        [live.calls || 0, "calls sent", "this process"],
+        [Math.round(live.waited_seconds || 0) + "s", "deliberate waiting",
+         "held back to stay under quota"],
+    ];
+    for (const [value, label, hint] of tiles) {
+        throttleStats.appendChild(statTile(value, label, hint));
+    }
+}
+
+
+function loadThrottleState() {
+    if (!throttleToggle || !throttleNote) {
+        return Promise.resolve();
+    }
+    return fetch("/api/throttle")
+        .then((response) => (response.ok ? response.json() : null))
+        .then((body) => {
+            if (!body || !body.configured) {
+                return;
+            }
+            const cfg = body.configured;
+            throttleToggle.value = cfg.enabled ? "1" : "0";
+            if (cfg.enabled) {
+                const spacing = cfg.per_minute > 0
+                    ? (60 / cfg.per_minute).toFixed(1)
+                    : "0";
+                throttleNote.textContent =
+                    `Pacing model calls to ${cfg.per_minute}/min `
+                    + `(~${spacing}s apart, ${cfg.max_concurrent} at a time). `
+                    + "Slower, but far less likely to exhaust a free-tier quota. "
+                    + "Choose Unthrottled once you are on paid plans with headroom.";
+                throttleNote.hidden = false;
+            } else {
+                throttleNote.textContent =
+                    "Pacing is off. Calls go out as fast as the pipeline allows, "
+                    + "which risks exhausting free-tier quotas.";
+                throttleNote.hidden = false;
+            }
+        })
+        .catch(() => { /* backend unreachable: keep the default selection */ });
+}
+
+
+loadRoundOptions();
+loadThrottleState();
 
 
 form.addEventListener("submit", async (event) => {
@@ -81,9 +200,12 @@ form.addEventListener("submit", async (event) => {
 
     try {
         const rounds = roundsInput ? roundsInput.value : "2";
+        const throttle = throttleToggle ? throttleToggle.value : "1";
 
         const response = await fetch(
-            `/api/research?q=${encodeURIComponent(question)}&rounds=${encodeURIComponent(rounds)}`
+            `/api/research?q=${encodeURIComponent(question)}`
+            + `&rounds=${encodeURIComponent(rounds)}`
+            + `&throttle=${encodeURIComponent(throttle)}`
         );
 
         if (!response.ok) {
@@ -157,6 +279,7 @@ function resetResults() {
     retrievalList.textContent = "";
     analysisStats.textContent = "";
     analysisNotes.textContent = "";
+    throttleStats.textContent = "";
 
     retrievalDetails.classList.add("hidden");
 
@@ -214,6 +337,10 @@ function displayEvent(data, question) {
 
     if (data.type === "status") {
         renderStatus(data.data);
+    }
+
+    if (data.throttle) {
+        renderThrottleStats(data.throttle);
     }
 
     if (data.type === "report") {

@@ -1,0 +1,1142 @@
+{
+  "nodes": [
+    {
+      "id": "g_docs",
+      "type": "group",
+      "label": "DESIGN DOCUMENTS",
+      "x": -1680,
+      "y": -1460,
+      "width": 4140,
+      "height": 420,
+      "color": "6"
+    },
+    {
+      "id": "d_hub",
+      "type": "file",
+      "file": "00-Overview.md",
+      "x": -1640,
+      "y": -1420,
+      "width": 560,
+      "height": 340,
+      "color": "6"
+    },
+    {
+      "id": "d_read",
+      "type": "file",
+      "file": "README.md",
+      "x": -1020,
+      "y": -1420,
+      "width": 560,
+      "height": 340,
+      "color": "6"
+    },
+    {
+      "id": "d_01",
+      "type": "file",
+      "file": "01-Architecture.md",
+      "x": -400,
+      "y": -1420,
+      "width": 560,
+      "height": 340,
+      "color": "6"
+    },
+    {
+      "id": "d_02",
+      "type": "file",
+      "file": "02-File-Reference.md",
+      "x": 220,
+      "y": -1420,
+      "width": 560,
+      "height": 340,
+      "color": "6"
+    },
+    {
+      "id": "d_03",
+      "type": "file",
+      "file": "03-Data-Stream.md",
+      "x": 1040,
+      "y": -1420,
+      "width": 560,
+      "height": 340,
+      "color": "6"
+    },
+    {
+      "id": "d_04",
+      "type": "file",
+      "file": "04-Configuration.md",
+      "x": 1860,
+      "y": -1420,
+      "width": 560,
+      "height": 340,
+      "color": "6"
+    },
+    {
+      "id": "g_ui",
+      "type": "group",
+      "label": "INTERFACE",
+      "x": -1660,
+      "y": -260,
+      "width": 640,
+      "height": 1210,
+      "color": "6"
+    },
+    {
+      "id": "browser",
+      "type": "text",
+      "text": "**Browser**  \u00b7  `frontend/index.html`\n\nQuestion box \u00b7 depth selector (rounds 1\u20134)\nCards: Source Retrieval, Evidence Extraction,\nResearch Plan, Searches, Evidence Check,\nWhere Sources Disagree, status banner, report\n\nLive progress via SSE; never a blank wait",
+      "x": -1620,
+      "y": -220,
+      "width": 560,
+      "height": 250,
+      "color": "6"
+    },
+    {
+      "id": "fe_js",
+      "type": "text",
+      "text": "**`app.js`** 693 \u00b7 **`markdown.js`** 325 \u00b7 **`style.css`** 743\n\n`app.js` reads `response.body` as a stream, splits\n`\\n\\n`, parses `data:` frames.\n\n`markdown.js` escapes everything *then* renders.\nAutolinks extracted before escaping so reference\nURLs stay clickable. `[n]` \u2192 `#ref-n` anchors.\nReferences \u2192 ONE `<ol>` (else each restarts at 1).",
+      "x": -1620,
+      "y": 70,
+      "width": 560,
+      "height": 280,
+      "color": "6"
+    },
+    {
+      "id": "api",
+      "type": "text",
+      "text": "**`backend/main.py`** 85\n\n`GET /api/research?q=&rounds=` \u2014 SSE, rounds\nclamped 1\u20134, every frame `data: {json}\\n\\n`\n`GET /api/report/download` \u2014 attachment\n`GET /api/report/markdown` \u2014 JSON\n\nMounts `/` (frontend) and `/exports`",
+      "x": -1620,
+      "y": 390,
+      "width": 560,
+      "height": 260,
+      "color": "6"
+    },
+    {
+      "id": "sse",
+      "type": "text",
+      "text": "**`researcher.py`** 103\n\nLangGraph node updates \u2192 SSE events.\nThe only module that imports `graph.py`.\n\n`status` emitted *before* `report` so the UI can\nrender state before a 100 KB body arrives.",
+      "x": -1620,
+      "y": 690,
+      "width": 560,
+      "height": 220,
+      "color": "6"
+    },
+    {
+      "id": "g_orch",
+      "type": "group",
+      "label": "ORCHESTRATION",
+      "x": -972,
+      "y": -60,
+      "width": 640,
+      "height": 790,
+      "color": "4"
+    },
+    {
+      "id": "graph",
+      "type": "text",
+      "text": "**`graph.py`** 446 \u2014 `CompiledStateGraph`\n\n8 nodes \u00b7 4 conditional edges\n**`Send`** fan-out \u2192 parallel workers\n**`operator.add`** reducers \u2192 safe concurrent merge\n`astream(stream_mode=\"updates\")` \u2192 SSE\n\n\u26a0 Orchestration only. All research logic is plain\nPython *inside* nodes.",
+      "x": -932,
+      "y": -20,
+      "width": 560,
+      "height": 330,
+      "color": "4"
+    },
+    {
+      "id": "state",
+      "type": "text",
+      "text": "**`State`** \u2014 `TypedDict(total=False)`\n\nReducer keys (merge, not overwrite):\n`raw` \u00b7 `log` \u00b7 `notes`\n\nAccumulate across rounds:\n`retrieval_index` (url \u2192 best grade, never re-fetch)\n`documents_by_url` \u00b7 `extracted`\n\nPer-run objects: `budget` (`CallBudget`) \u00b7\n`fetcher` (fetch budget is per run)",
+      "x": -932,
+      "y": 350,
+      "width": 560,
+      "height": 340,
+      "color": "4"
+    },
+    {
+      "id": "g_pipe",
+      "type": "group",
+      "label": "PIPELINE NODES  (LangGraph, left \u2192 right)",
+      "x": -284,
+      "y": -300,
+      "width": 620,
+      "height": 2760,
+      "color": "5"
+    },
+    {
+      "id": "n_planner",
+      "type": "text",
+      "text": "**`planner`** \u00b7 LLM \u00d71\n\nQuestion \u2192 3\u20135 sub-questions, each with\nweb / news / scholar / github searches.\nTypical run: 7 searches.",
+      "x": -244,
+      "y": -260,
+      "width": 540,
+      "height": 210
+    },
+    {
+      "id": "n_sworker",
+      "type": "text",
+      "text": "**`search_worker`** \u00b7 no LLM\n\n**Fanned out in parallel via `Send`.**\nMeasured peak concurrency **6** (asyncio_0\u20265,\nstart within 11 ms) \u2192 **1.4 s** wall vs 4.9 s\nsequential = **3.5\u00d7 faster**.",
+      "x": -244,
+      "y": -20,
+      "width": 540,
+      "height": 250,
+      "color": "2"
+    },
+    {
+      "id": "n_collect",
+      "type": "text",
+      "text": "**`collect`** \u00b7 no LLM\n\nDedupe by normalised URL (`www.`, trailing\nslash folded), drop URL-less rows, flag\n\u22653 years as `stale`.",
+      "x": -244,
+      "y": 250,
+      "width": 540,
+      "height": 200
+    },
+    {
+      "id": "n_retrieve",
+      "type": "text",
+      "text": "**`retrieve`** \u00b7 no LLM\n\nSkip URLs already read \u2192 fetch \u2192 grade \u2192 fold\ninto `retrieval_index` \u2192 mine references \u2192\nre-chunk the union.\n\n`_aggregate_retrieval()` derives **all** counters\nfrom that one index, so `attempted == full +\npartial + metadata_only + failed` always holds.",
+      "x": -244,
+      "y": 480,
+      "width": 540,
+      "height": 320,
+      "color": "2"
+    },
+    {
+      "id": "n_chunker",
+      "type": "text",
+      "text": "**`chunker`** \u00b7 no LLM\n\nStructure-aware split. Headings \u2192 section path\n(`Performance > UI frame rate`), PDF `\\f` \u2192 page\nnumbers. Never truncates a document whole.",
+      "x": -244,
+      "y": 830,
+      "width": 540,
+      "height": 220
+    },
+    {
+      "id": "n_relevance",
+      "type": "text",
+      "text": "**`relevance`** \u00b7 no LLM\n\nIDF-weighted overlap \u00b7 boost dimension coverage\nand quantitative content \u00b7 penalise boilerplate\n\u00b7 `diversify()` round-robin so one verbose\ndocument cannot flood the batch.\n\nAlso extracts `targets` and `dimensions` from the\nquestion \u2014 these decide the report's sections.",
+      "x": -244,
+      "y": 1080,
+      "width": 540,
+      "height": 280
+    },
+    {
+      "id": "n_extract",
+      "type": "text",
+      "text": "**`extract`** \u00b7 LLM **batched**\n\nChunks packed to 13k chars per call; one call\nyields every finding those chunks support.\n\nPasses every record through the two guards \u2192\n`evidence.py` \u2192 `quote_is_supported()`.",
+      "x": -244,
+      "y": 1390,
+      "width": 540,
+      "height": 230,
+      "color": "5"
+    },
+    {
+      "id": "n_gap",
+      "type": "text",
+      "text": "**`gap_check`** \u00b7 LLM \u00d71\n\nIs there a *specific* gap worth another round?\n`round >= max_rounds` stops the loop \u2014 **our**\nbound, not LangGraph's `recursion_limit`.",
+      "x": -244,
+      "y": 1650,
+      "width": 540,
+      "height": 210
+    },
+    {
+      "id": "n_contra",
+      "type": "text",
+      "text": "**`contradiction_check`** \u00b7 LLM batched\n\nGenuine disagreements between findings.\nInstructed to separate real conflicts from\ndifferences explained by date, workload or scope.",
+      "x": -244,
+      "y": 1890,
+      "width": 540,
+      "height": 210
+    },
+    {
+      "id": "n_synth",
+      "type": "text",
+      "text": "**`synthesizer`** \u00b7 LLM ~14\n\n`assign_references()` runs **before any model\ncall** \u2192 a fabricated citation has no number to\nreference. Then one call per section, each given\nonly its own evidence slice.\n\nEmits `ReportResult(markdown, status,\nmissing_sections)` and writes the export.",
+      "x": -244,
+      "y": 2130,
+      "width": 540,
+      "height": 290,
+      "color": "1"
+    },
+    {
+      "id": "g_modA",
+      "type": "group",
+      "label": "RETRIEVAL & EVIDENCE MODULES",
+      "x": 384,
+      "y": -300,
+      "width": 640,
+      "height": 2790,
+      "color": "3"
+    },
+    {
+      "id": "m_planner",
+      "type": "text",
+      "text": "**`planner.py`** 19\n\nOne `ask()` \u2192 JSON sub-questions. Rejects\ninvalid shapes rather than repairing them;\nfilters to known sources, non-empty queries.",
+      "x": 424,
+      "y": -260,
+      "width": 560,
+      "height": 200
+    },
+    {
+      "id": "m_searcher",
+      "type": "text",
+      "text": "**`searcher.py`** 139\n\n`search(source, query, n)` \u2192 SerpApi.\n`web`\u2192google \u00b7 `news`\u2192google_news \u00b7\n`scholar`\u2192google_scholar \u00b7\n`github`\u2192google + `site:github.com`\n\nNormalises to `{title,url,snippet,date,type,query}`.\nOptional disk cache \u00b7 full mock mode.",
+      "x": 424,
+      "y": -30,
+      "width": 560,
+      "height": 290
+    },
+    {
+      "id": "m_collector",
+      "type": "text",
+      "text": "**`collector.py`** 60\n\nDedupe \u00b7 freshness flag \u00b7 `context(limit=40)`\nrenders the numbered block a model sees.\n`year_of()` parses loose date strings.",
+      "x": 424,
+      "y": 290,
+      "width": 560,
+      "height": 180
+    },
+    {
+      "id": "m_fetch",
+      "type": "text",
+      "text": "**`fetch.py`** 724\n\n**5 parallel parse branches:**\n\u2022 PDF \u2192 `pypdf`, per page, `\\f` markers\n\u2022 arXiv \u2192 arXiv API (title/authors/date/DOI)\n\u2022 GitHub \u2192 REST API (stars/licence/topics) + README\n\u2022 HTML \u2192 `lxml`, article container only\n\u2022 plain / md / json \u2192 verbatim\n\n**Graded:** `full` / `partial` / `metadata_only` /\n`failed`. Honours robots.txt; 429/5xx retried\nonce. `_structured_text()` preserves headings,\ntables and code indentation.",
+      "x": 424,
+      "y": 500,
+      "width": 560,
+      "height": 470,
+      "color": "2"
+    },
+    {
+      "id": "m_chunker",
+      "type": "text",
+      "text": "**`chunker.py`** 262\n\n`chunk_document()` groups blocks to\n`CHUNK_TARGET_CHARS`, hard-caps at\n`CHUNK_MAX_CHARS`, splits an oversized block on\nsentence boundaries, samples evenly when a doc\nexceeds `CHUNKS_PER_SOURCE`.\n\n`Chunk` carries `section`, `page`, `chunk_id`,\n`char_start`, `retrieval_status`, `doi`.",
+      "x": 424,
+      "y": 1000,
+      "width": 560,
+      "height": 300
+    },
+    {
+      "id": "m_relevance",
+      "type": "text",
+      "text": "**`relevance.py`** 231\n\n`rank()` IDF overlap \u00b7 `diversify()` per-source\ncap \u00b7 `targets()` / `dimensions()` string\nextraction.\n\nNo model calls anywhere in this file.",
+      "x": 424,
+      "y": 1330,
+      "width": 560,
+      "height": 230
+    },
+    {
+      "id": "m_references",
+      "type": "text",
+      "text": "**`references.py`** 139\n\nBounded lead mining from outbound links and\nDOIs of documents actually read.\nCapped at `REFERENCES_MAX=6`, per-source 3,\n**depth 1**. Skips social / account-wall hosts.\n\nNo uncontrolled crawling.",
+      "x": 424,
+      "y": 1590,
+      "width": 560,
+      "height": 240
+    },
+    {
+      "id": "m_evidence",
+      "type": "text",
+      "text": "**`evidence.py`** 270\n\nLeaf module. `Evidence` dataclass \u00b7\n`quote_is_supported()` sliding-window overlap \u00b7\n`dedupe()` \u00b7 `statistics()`.\n\n`usable_url` prefers **DOI over URL** so citations\nalways resolve to something canonical.",
+      "x": 424,
+      "y": 1860,
+      "width": 560,
+      "height": 290,
+      "color": "3"
+    },
+    {
+      "id": "g_modB",
+      "type": "group",
+      "label": "LLM, GUARDS & SYNTHESIS",
+      "x": 1072,
+      "y": -300,
+      "width": 640,
+      "height": 2250,
+      "color": "5"
+    },
+    {
+      "id": "m_llm",
+      "type": "text",
+      "text": "**`llm.py`** 611 \u2014 the only path to a model\n\nChain = `[role override, LLM_MODEL] + LLM_FALLBACKS`,\ndeduped, order preserved.\n\n**Retry policy**\n\u2022 rate limit (429) \u2192 advance, never same model\n\u2022 request-too-large \u2192 advance **+ learn ceiling**\n\u2022 transient 5xx \u2192 retry same model, 1/2/4 s + jitter\n\u2022 non-retryable (Auth/NotFound/BadRequest) \u2192 advance\n\u2022 programming errors \u2192 propagate, never swallowed\n\nPer-model cooldown table \u00b7 `CallBudget` \u00b7 mock mode.",
+      "x": 1112,
+      "y": -260,
+      "width": 560,
+      "height": 420,
+      "color": "5"
+    },
+    {
+      "id": "m_guards",
+      "type": "text",
+      "text": "**The two anti-fabrication guards**\n\nRun deterministically *after* every extraction call.\nIn one real run these discarded **4 fabricated\ncitations**.\n\n**1** record names a `chunk_id` that was not in the\nbatch \u2192 *discarded*\n\n**2** quote not findable in its passage (\u226572% word\noverlap) and a number is involved \u2192 *discarded*\n\n`metadata_only` further forced to `weak`,\nconfidence \u2264 0.3, with the document marked **NOT read**.",
+      "x": 1112,
+      "y": 200,
+      "width": 560,
+      "height": 400,
+      "color": "3"
+    },
+    {
+      "id": "m_report",
+      "type": "text",
+      "text": "**`report.py`** 674\n\n`assign_references()` \u2014 url\u2192n, by strength, **before\nany model call** \u00b7 `render_references()` sequential\n1..N \u00b7 `_evidence_table()` deterministic \u00b7\n7 section prompts sharing one discipline block\n(cite the exact claim \u00b7 never invent a number \u00b7\nkeep conditions with numbers \u00b7 vendor claims are\ninterested parties \u00b7 say the evidence is insufficient).\n\n`classify_status()` \u2192 `completed` / `partial` / `failed`.",
+      "x": 1112,
+      "y": 640,
+      "width": 560,
+      "height": 400,
+      "color": "1"
+    },
+    {
+      "id": "m_prompts",
+      "type": "text",
+      "text": "**`report_prompts.py`** 13\n\nThe original single-call prompt, kept verbatim.\nUsed only by the no-evidence fallback path, so a\nsnippet-only run still produces a short summary\n(flagged `partial`, never passed off as deep).",
+      "x": 1112,
+      "y": 1350,
+      "width": 560,
+      "height": 200
+    },
+    {
+      "id": "m_export",
+      "type": "text",
+      "text": "**`export.py`** 125\n\n`save()` \u2192 `exports/<slug>-<date>.md` with YAML\nfront matter recording what was actually read.\nRemembers the path per question so\n`/api/report/download` can serve it back.",
+      "x": 1112,
+      "y": 1080,
+      "width": 560,
+      "height": 240,
+      "color": "1"
+    },
+    {
+      "id": "g_ext",
+      "type": "group",
+      "label": "EXTERNAL",
+      "x": 1760,
+      "y": -300,
+      "width": 640,
+      "height": 1290,
+      "color": "2"
+    },
+    {
+      "id": "x_serp",
+      "type": "text",
+      "text": "**SerpApi**\n\n`web`\u2192google \u00b7 `news`\u2192google_news\n`scholar`\u2192google_scholar\n`github`\u2192google + `site:` filter\n\n**~42 rows** from 7 queries",
+      "x": 1800,
+      "y": -260,
+      "width": 560,
+      "height": 220,
+      "color": "2"
+    },
+    {
+      "id": "x_docs",
+      "type": "text",
+      "text": "**The open web**\n\nPDFs \u00b7 arXiv preprints \u00b7 GitHub READMEs \u00b7\nHTML articles \u00b7 official documentation\n\nA representative run: 67 attempted \u2192 **25 fetched**\n(24 full, 1 partial) \u2192 **64,796 words** \u2192 135 chunks\n\n\u26a0 **~\u2153 unreachable**: robots.txt disallows (Reddit,\nFacebook, LinkedIn), bot protection (Medium,\nIndeed), origin 429s. Kept as `metadata_only`.",
+      "x": 1800,
+      "y": -10,
+      "width": 560,
+      "height": 330,
+      "color": "2"
+    },
+    {
+      "id": "x_llm",
+      "type": "text",
+      "text": "**LLM providers**\n\nGemini \u2192 OpenRouter \u2192 Cohere \u2192 Groq (last)\n\n**Groq free tier caps at 8,000 TPM.** Section\nprompts measured **8,500\u20139,800 tokens**, exceeding\nthe whole window on their own \u2014 one request can\nnever succeed there, whatever the wait.",
+      "x": 1800,
+      "y": 360,
+      "width": 560,
+      "height": 290,
+      "color": "2"
+    },
+    {
+      "id": "x_quota",
+      "type": "text",
+      "text": "**Provider quotas**\n\nGemini daily quota (seen exhausted, ~18 h)\nGroq TPM ceiling\n\nMitigation: learned per-model **prompt ceilings** +\na 900 s oversized cooldown, so an oversized\nprompt is routed away instead of retried.",
+      "x": 1800,
+      "y": 690,
+      "width": 560,
+      "height": 260,
+      "color": "2"
+    },
+    {
+      "id": "g_out",
+      "type": "group",
+      "label": "OUTPUT",
+      "x": 2448,
+      "y": 100,
+      "width": 640,
+      "height": 1330,
+      "color": "1"
+    },
+    {
+      "id": "o_events",
+      "type": "text",
+      "text": "**SSE event stream**\n\n`plan` \u00b7 `results` \u00b7 `evidence` \u00b7 `retrieval`\n`analysis` \u00b7 `gap` \u00b7 `contradictions`\n**`status`** \u00b7 `report` \u00b7 `error` \u00b7 `done`\n\n`error` then `done` are always the last frames.",
+      "x": 2488,
+      "y": 140,
+      "width": 560,
+      "height": 280,
+      "color": "1"
+    },
+    {
+      "id": "o_status",
+      "type": "text",
+      "text": "**Completion state**\n\n`completed` \u00b7 `partial` \u00b7 `failed`\n\nSurfaced **four** ways:\n1. the `status` SSE event\n2. the `report` event's `status` field\n3. a banner inside the markdown itself\n4. frontend banner + card class\n\nA lost section can never read as a finished run.",
+      "x": 2488,
+      "y": 450,
+      "width": 560,
+      "height": 320,
+      "color": "1"
+    },
+    {
+      "id": "o_report",
+      "type": "text",
+      "text": "**Final report**\n\n11,000\u201314,000 words \u00b7 19\u201339 references\nsequential `1..N`, every number resolves to a\ncanonical, clickable URL\n\nSections: Executive Summary \u00b7 Scope and\nMethodology \u00b7 one per requested dimension \u00b7\nWhere the Evidence Conflicts \u00b7 Scenario Analysis \u00b7\nDecision Framework \u00b7 Evidence Quality and\nLimitations \u00b7 Conclusion \u00b7 Evidence by Source \u00b7\nReferences.",
+      "x": 2488,
+      "y": 800,
+      "width": 560,
+      "height": 380,
+      "color": "1"
+    },
+    {
+      "id": "o_file",
+      "type": "text",
+      "text": "**`exports/*.md`**\n\nDownloadable \u00b7 carries front matter and the\npartial banner, so a saved file is still honest\nwhen reopened weeks later.",
+      "x": 2488,
+      "y": 1210,
+      "width": 560,
+      "height": 180,
+      "color": "1"
+    },
+    {
+      "id": "g_cross",
+      "type": "group",
+      "label": "CROSS-CUTTING",
+      "x": -1660,
+      "y": 2560,
+      "width": 3120,
+      "height": 900,
+      "color": "4"
+    },
+    {
+      "id": "c_config",
+      "type": "text",
+      "text": "**`config.py`** 216 \u2014 every tunable\n\n34 getters, all env-driven with a working default,\nread on **each access** (never cached at import) and\nclamped at read time.\n\n**Stage toggles** `RESEARCH_FETCH` \u00b7 `RESEARCH_ANALYZE`\n**Retrieval** `FETCH_MAX_SOURCES=22` \u00b7 `FETCH_MAX_WORKERS=6`\n**Chunking** `CHUNK_TARGET_CHARS=1400` \u00b7 `CHUNKS_PER_SOURCE=6`\n**Extraction** `EXTRACT_BATCH_CHARS=13000` \u2190 *throughput dial*\n**Report** `REPORT_EVIDENCE_PER_SECTION=60` \u2190 *prompt-size dial*\n**Budgets** `RESEARCH_LLM_BUDGET=40` \u00b7 `RESEARCH_FETCH_BUDGET=28`",
+      "x": -1620,
+      "y": 2600,
+      "width": 560,
+      "height": 480,
+      "color": "4"
+    },
+    {
+      "id": "c_tests",
+      "type": "text",
+      "text": "**Tests \u2014 165 passing, 1 live**\n\n`test_llm.py` 589 \u2014 retry, fallback, the three\nrate-limit kinds, cooldowns, prompt ceilings,\n8-thread concurrency (8 callers \u2192 **1** attempt)\n\n`test_deep_research.py` 727 \u2014 fetch strategies,\nchunking, guards, stats accumulation, status\n\n`test_frontend_render.py` 125 \u2014 real `markdown.js`\nvia dukpy: citations, numbering, XSS\n\nRun: `pytest -q -m \"not live\"`",
+      "x": -1000,
+      "y": 2600,
+      "width": 560,
+      "height": 480
+    },
+    {
+      "id": "c_legacy",
+      "type": "text",
+      "text": "**Off-path (dead but tested)**\n\n`backend/tools/` \u2014 `github.py` 117 \u00b7 `news.py` 107 \u00b7\n`serpapi.py` 98\n`backend/evidence/collector.py` 44\n\n**366 lines nothing on the live path imports.**\n`searcher.py` calls `serpapi.GoogleSearch` directly.\nKept alive only by 664 lines of tests\n(`test_github/news/serpapi/collector.py`) \u2014 roughly a\nthird of the codebase.",
+      "x": -380,
+      "y": 2600,
+      "width": 560,
+      "height": 480
+    },
+    {
+      "id": "c_metrics",
+      "type": "text",
+      "text": "**Reference run, end to end**\n\nplan 1 \u2192 **7 searches** (4 sub-questions)\ncollect ~42 rows \u2192 **61 unique URLs**\nretrieve 61 \u2192 **25 fetched**, 64,796 words,\n  **135 chunks**, 6 references followed\nrelevance 135 \u2192 **70 kept**, diversified\nextract 70 \u2192 **110 verified findings**, 7 dimensions\nper-source synthesis \u2192 **9 assessed**\ncontradictions \u2192 **10**\nreport \u2192 **13,402 words**, 19 cited, 39 references",
+      "x": 240,
+      "y": 2600,
+      "width": 560,
+      "height": 480
+    },
+    {
+      "id": "c_legend",
+      "type": "text",
+      "text": "**Legend**\n\n**Colours** \u2014 `6` interface \u00b7 `4` orchestration /\ncross-cutting \u00b7 `5` LLM + pipeline \u00b7\n`3` evidence \u00b7 `2` external I/O \u00b7 `1` output\n\n**Bold node title** \u2014 module or graph node\n`\u00b7  no LLM` \u2014 deterministic, costs no model call\n`\u00b7  LLM \u00d7N` \u2014 N model calls for that stage\n\n**Edge labels** \u2014 the data crossing that link.\nBidirectional pairs = request then response.\n\n**Read the flow left \u2192 right**: interface \u2192\norchestration \u2192 pipeline nodes \u2192 modules \u2192\nexternal \u2192 output. The bottom band is\ncross-cutting, not part of the runtime path.",
+      "x": 860,
+      "y": 2600,
+      "width": 560,
+      "height": 480
+    },
+    {
+      "id": "m_planner2",
+      "type": "text",
+      "text": "**`planner.py`** 280 \u00b7 1 LLM call\n\nPlan \u2192 dedupe \u2192 replace.\n\nTwo duplicate signals, own thresholds:\nrare-term (IDF) \u22650.70, char trigrams \u22650.45.\nReworded dup scores 0.61; distinct dims 0.05\u20130.09.\n\nOn any failure the surviving plan is used.",
+      "x": 424,
+      "y": 2190,
+      "width": 560,
+      "height": 260,
+      "color": "5"
+    },
+    {
+      "id": "m_throttle",
+      "type": "text",
+      "text": "**`throttle.py`** 193\n\nProcess-wide pacing, one singleton per kind\n(`llm`, `search`) shared by every run.\n\n`per_minute` bounds the total in any window.\n`max_concurrent` stops two tabs jointly\nexceeding one quota. Verified exact spacing;\nslot released even when a call raises.\n\nDefault 12/min + 1 concurrent.",
+      "x": 1112,
+      "y": 1590,
+      "width": 560,
+      "height": 320,
+      "color": "5"
+    },
+    {
+      "id": "c_depth",
+      "type": "text",
+      "text": "**Depth, budget & pacing**\n\n`RESEARCH_MAX_ROUNDS` 2 \u00b7 ceiling 10\n`LLM_BUDGET` auto = 17 + 13/round\n`THROTTLE_LLM` 1 \u00b7 12/min \u00b7 1 concurrent\n\nCost for 43 calls: 30/min +1.4 min,\n20/min +2.1 min, 12/min +3.6 min.\n\nA starved budget logs a warning and the\nreport returns `partial`, never silently\ntruncated.",
+      "x": -1620,
+      "y": 3120,
+      "width": 560,
+      "height": 300,
+      "color": "4"
+    },
+    {
+      "id": "c_incr",
+      "type": "text",
+      "text": "**Incremental analysis**\n\n`ANALYSE_REUSE_SOURCES=1`\n\n`extracted_sources`: url \u2192 grade.\nA source is re-read only when its grade\n*improves* (snippet became a real document).\n\nPassages read, 10 docs +2/round:\nbefore 10\u219222\u219236\u219252, after 10\u219212\u219214\u219216",
+      "x": -1000,
+      "y": 3120,
+      "width": 560,
+      "height": 300,
+      "color": "4"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e001",
+      "fromNode": "browser",
+      "fromSide": "right",
+      "toNode": "fe_js",
+      "toSide": "left"
+    },
+    {
+      "id": "e002",
+      "fromNode": "fe_js",
+      "fromSide": "right",
+      "toNode": "api",
+      "toSide": "left",
+      "label": "GET ?q=&rounds="
+    },
+    {
+      "id": "e003",
+      "fromNode": "api",
+      "fromSide": "right",
+      "toNode": "sse",
+      "toSide": "left",
+      "label": "deep_research()"
+    },
+    {
+      "id": "e004",
+      "fromNode": "sse",
+      "fromSide": "right",
+      "toNode": "graph",
+      "toSide": "left",
+      "label": "astream(updates)",
+      "color": "4"
+    },
+    {
+      "id": "e005",
+      "fromNode": "graph",
+      "fromSide": "right",
+      "toNode": "state",
+      "toSide": "left",
+      "label": "shared state"
+    },
+    {
+      "id": "e006",
+      "fromNode": "graph",
+      "fromSide": "right",
+      "toNode": "n_planner",
+      "toSide": "top",
+      "label": "start",
+      "color": "4"
+    },
+    {
+      "id": "e007",
+      "fromNode": "n_planner",
+      "fromSide": "right",
+      "toNode": "m_planner",
+      "toSide": "left",
+      "label": "uses",
+      "color": "4"
+    },
+    {
+      "id": "e008",
+      "fromNode": "n_planner",
+      "fromSide": "right",
+      "toNode": "n_sworker",
+      "toSide": "left",
+      "label": "Send \u00d7 N",
+      "color": "4"
+    },
+    {
+      "id": "e009",
+      "fromNode": "n_sworker",
+      "fromSide": "right",
+      "toNode": "m_searcher",
+      "toSide": "left",
+      "label": "calls",
+      "color": "4"
+    },
+    {
+      "id": "e010",
+      "fromNode": "m_searcher",
+      "fromSide": "right",
+      "toNode": "x_serp",
+      "toSide": "left",
+      "label": "query",
+      "color": "2"
+    },
+    {
+      "id": "e011",
+      "fromNode": "x_serp",
+      "fromSide": "left",
+      "toNode": "m_searcher",
+      "toSide": "bottom",
+      "label": "~42 rows",
+      "color": "2"
+    },
+    {
+      "id": "e012",
+      "fromNode": "n_sworker",
+      "fromSide": "right",
+      "toNode": "n_collect",
+      "toSide": "left",
+      "label": "converge",
+      "color": "4"
+    },
+    {
+      "id": "e013",
+      "fromNode": "n_collect",
+      "fromSide": "right",
+      "toNode": "m_collector",
+      "toSide": "left",
+      "label": "uses",
+      "color": "4"
+    },
+    {
+      "id": "e014",
+      "fromNode": "n_collect",
+      "fromSide": "right",
+      "toNode": "n_retrieve",
+      "toSide": "left",
+      "label": "unique URLs",
+      "color": "4"
+    },
+    {
+      "id": "e015",
+      "fromNode": "n_retrieve",
+      "fromSide": "right",
+      "toNode": "m_fetch",
+      "toSide": "left",
+      "label": "fetch + grade",
+      "color": "4"
+    },
+    {
+      "id": "e016",
+      "fromNode": "m_fetch",
+      "fromSide": "right",
+      "toNode": "x_docs",
+      "toSide": "left",
+      "label": "HTTP GET",
+      "color": "2"
+    },
+    {
+      "id": "e017",
+      "fromNode": "x_docs",
+      "fromSide": "left",
+      "toNode": "m_fetch",
+      "toSide": "bottom",
+      "label": "FetchedDoc",
+      "color": "2"
+    },
+    {
+      "id": "e018",
+      "fromNode": "n_retrieve",
+      "fromSide": "right",
+      "toNode": "m_references",
+      "toSide": "top",
+      "label": "outbound links",
+      "color": "4"
+    },
+    {
+      "id": "e019",
+      "fromNode": "m_references",
+      "fromSide": "right",
+      "toNode": "x_docs",
+      "toSide": "bottom",
+      "label": "leads (depth 1)",
+      "color": "2"
+    },
+    {
+      "id": "e020",
+      "fromNode": "n_retrieve",
+      "fromSide": "right",
+      "toNode": "m_chunker",
+      "toSide": "left",
+      "label": "documents",
+      "color": "4"
+    },
+    {
+      "id": "e021",
+      "fromNode": "n_chunker",
+      "fromSide": "right",
+      "toNode": "m_chunker",
+      "toSide": "left",
+      "label": "splits",
+      "color": "4"
+    },
+    {
+      "id": "e022",
+      "fromNode": "n_chunker",
+      "fromSide": "right",
+      "toNode": "n_relevance",
+      "toSide": "left",
+      "label": "chunks + provenance",
+      "color": "4"
+    },
+    {
+      "id": "e023",
+      "fromNode": "n_relevance",
+      "fromSide": "right",
+      "toNode": "m_relevance",
+      "toSide": "left",
+      "label": "scores",
+      "color": "4"
+    },
+    {
+      "id": "e024",
+      "fromNode": "n_relevance",
+      "fromSide": "right",
+      "toNode": "n_extract",
+      "toSide": "left",
+      "label": "top 70",
+      "color": "4"
+    },
+    {
+      "id": "e025",
+      "fromNode": "n_extract",
+      "fromSide": "right",
+      "toNode": "m_evidence",
+      "toSide": "left",
+      "label": "verified records",
+      "color": "4"
+    },
+    {
+      "id": "e026",
+      "fromNode": "n_extract",
+      "fromSide": "right",
+      "toNode": "m_guards",
+      "toSide": "top",
+      "label": "every record",
+      "color": "3"
+    },
+    {
+      "id": "e027",
+      "fromNode": "m_guards",
+      "fromSide": "left",
+      "toNode": "m_evidence",
+      "toSide": "bottom",
+      "label": "quote check",
+      "color": "3"
+    },
+    {
+      "id": "e028",
+      "fromNode": "n_extract",
+      "fromSide": "right",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "batched ask()",
+      "color": "5"
+    },
+    {
+      "id": "e029",
+      "fromNode": "m_llm",
+      "fromSide": "right",
+      "toNode": "x_llm",
+      "toSide": "top",
+      "label": "completion",
+      "color": "2"
+    },
+    {
+      "id": "e030",
+      "fromNode": "x_llm",
+      "fromSide": "left",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "429 / oversized / 5xx",
+      "color": "2"
+    },
+    {
+      "id": "e031",
+      "fromNode": "x_quota",
+      "fromSide": "left",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "cooldown + ceiling",
+      "color": "2"
+    },
+    {
+      "id": "e032",
+      "fromNode": "n_extract",
+      "fromSide": "right",
+      "toNode": "n_gap",
+      "toSide": "left",
+      "label": "findings",
+      "color": "4"
+    },
+    {
+      "id": "e033",
+      "fromNode": "n_gap",
+      "fromSide": "right",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "ask()",
+      "color": "5"
+    },
+    {
+      "id": "e034",
+      "fromNode": "n_gap",
+      "fromSide": "right",
+      "toNode": "n_sworker",
+      "toSide": "bottom",
+      "label": "gaps \u2192 next round",
+      "color": "4"
+    },
+    {
+      "id": "e035",
+      "fromNode": "n_gap",
+      "fromSide": "right",
+      "toNode": "n_contra",
+      "toSide": "left",
+      "label": "sufficient",
+      "color": "4"
+    },
+    {
+      "id": "e036",
+      "fromNode": "n_contra",
+      "fromSide": "right",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "batched ask()",
+      "color": "5"
+    },
+    {
+      "id": "e037",
+      "fromNode": "n_contra",
+      "fromSide": "right",
+      "toNode": "n_synth",
+      "toSide": "left",
+      "label": "conflicts",
+      "color": "4"
+    },
+    {
+      "id": "e038",
+      "fromNode": "n_synth",
+      "fromSide": "right",
+      "toNode": "m_llm",
+      "toSide": "top",
+      "label": "~14 section calls",
+      "color": "5"
+    },
+    {
+      "id": "e039",
+      "fromNode": "n_synth",
+      "fromSide": "right",
+      "toNode": "m_report",
+      "toSide": "left",
+      "label": "generate_report()",
+      "color": "4"
+    },
+    {
+      "id": "e040",
+      "fromNode": "m_report",
+      "fromSide": "right",
+      "toNode": "m_export",
+      "toSide": "top",
+      "label": "save()",
+      "color": "1"
+    },
+    {
+      "id": "e041",
+      "fromNode": "n_synth",
+      "fromSide": "right",
+      "toNode": "o_events",
+      "toSide": "left",
+      "label": "status + report",
+      "color": "1"
+    },
+    {
+      "id": "e042",
+      "fromNode": "o_events",
+      "fromSide": "right",
+      "toNode": "o_status",
+      "toSide": "top",
+      "label": "status field",
+      "color": "1"
+    },
+    {
+      "id": "e043",
+      "fromNode": "o_status",
+      "fromSide": "right",
+      "toNode": "o_report",
+      "toSide": "top",
+      "label": "banner + card class",
+      "color": "1"
+    },
+    {
+      "id": "e044",
+      "fromNode": "m_report",
+      "fromSide": "right",
+      "toNode": "m_prompts",
+      "toSide": "top",
+      "label": "fallback only",
+      "color": "3"
+    },
+    {
+      "id": "e045",
+      "fromNode": "m_export",
+      "fromSide": "right",
+      "toNode": "o_file",
+      "toSide": "left",
+      "label": "attachment",
+      "color": "1"
+    },
+    {
+      "id": "e046",
+      "fromNode": "o_report",
+      "fromSide": "right",
+      "toNode": "o_file",
+      "toSide": "bottom",
+      "label": "same markdown",
+      "color": "1"
+    },
+    {
+      "id": "e047",
+      "fromNode": "o_events",
+      "fromSide": "top",
+      "toNode": "browser",
+      "toSide": "bottom",
+      "label": "SSE frames",
+      "color": "6"
+    },
+    {
+      "id": "e048",
+      "fromNode": "c_config",
+      "fromSide": "top",
+      "toNode": "graph",
+      "toSide": "bottom",
+      "label": "limits",
+      "color": "4"
+    },
+    {
+      "id": "e049",
+      "fromNode": "c_config",
+      "fromSide": "right",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "defaults",
+      "color": "4"
+    },
+    {
+      "id": "e050",
+      "fromNode": "c_tests",
+      "fromSide": "top",
+      "toNode": "n_extract",
+      "toSide": "top",
+      "label": "covers"
+    },
+    {
+      "id": "e051",
+      "fromNode": "c_tests",
+      "fromSide": "right",
+      "toNode": "fe_js",
+      "toSide": "bottom",
+      "label": "covers"
+    },
+    {
+      "id": "e052",
+      "fromNode": "c_metrics",
+      "fromSide": "top",
+      "toNode": "o_report",
+      "toSide": "bottom",
+      "label": "real numbers",
+      "color": "1"
+    },
+    {
+      "id": "e053",
+      "fromNode": "c_legacy",
+      "fromSide": "top",
+      "toNode": "m_searcher",
+      "toSide": "bottom",
+      "label": "superseded by"
+    },
+    {
+      "id": "e054",
+      "fromNode": "d_hub",
+      "fromSide": "right",
+      "toNode": "c_legend",
+      "toSide": "top",
+      "label": "this canvas",
+      "color": "6"
+    },
+    {
+      "id": "e055",
+      "fromNode": "d_read",
+      "fromSide": "right",
+      "toNode": "d_01",
+      "toSide": "left",
+      "label": "then"
+    },
+    {
+      "id": "e056",
+      "fromNode": "d_01",
+      "fromSide": "right",
+      "toNode": "d_02",
+      "toSide": "left"
+    },
+    {
+      "id": "e057",
+      "fromNode": "d_02",
+      "fromSide": "right",
+      "toNode": "d_03",
+      "toSide": "left"
+    },
+    {
+      "id": "e058",
+      "fromNode": "d_03",
+      "fromSide": "right",
+      "toNode": "d_04",
+      "toSide": "left"
+    },
+    {
+      "id": "e059",
+      "fromNode": "m_planner2",
+      "fromSide": "left",
+      "toNode": "n_planner",
+      "toSide": "bottom",
+      "label": "plans + dedupes",
+      "color": "5"
+    },
+    {
+      "id": "e060",
+      "fromNode": "m_throttle",
+      "fromSide": "top",
+      "toNode": "m_llm",
+      "toSide": "bottom",
+      "label": "paces every call",
+      "color": "5"
+    },
+    {
+      "id": "e061",
+      "fromNode": "c_depth",
+      "fromSide": "top",
+      "toNode": "c_config",
+      "toSide": "top",
+      "label": "tuning",
+      "color": "4"
+    },
+    {
+      "id": "e062",
+      "fromNode": "c_incr",
+      "fromSide": "top",
+      "toNode": "n_extract",
+      "toSide": "top",
+      "label": "governs",
+      "color": "4"
+    }
+  ]
+}

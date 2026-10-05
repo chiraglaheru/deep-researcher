@@ -53,12 +53,22 @@
                 <div class="controls">
                     <label for="rounds">Research depth</label>
                     <select id="rounds">
-                        <option value="1">Quick (1 round)</option>
-                        <option value="2" selected>Standard (2 rounds)</option>
-                        <option value="3">Deep (3 rounds)</option>
-                        <option value="4">Exhaustive (4 rounds)</option>
+                        <!-- options are built from /api/config so the ceiling
+                             stays a backend setting, not a UI constant -->
                     </select>
                 </div>
+
+                <p class="controls-note" id="rounds-note" hidden></p>
+
+                <div class="controls">
+                    <label for="throttle-toggle">Request pacing</label>
+                    <select id="throttle-toggle">
+                        <option value="1" selected>Throttled (protect free tiers)</option>
+                        <option value="0">Unthrottled (faster, use paid tiers)</option>
+                    </select>
+                </div>
+
+                <p class="controls-note" id="throttle-note" hidden></p>
 
                 <button id="research-button" type="submit">
                     Start Research →
@@ -113,6 +123,8 @@
                 <div id="analysis-stats" class="stats-grid"></div>
 
                 <ul id="analysis-notes" class="notes"></ul>
+
+                <div id="throttle-stats" class="stats-grid"></div>
 
             </div>
 

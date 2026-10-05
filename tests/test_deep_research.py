@@ -7,6 +7,7 @@ reference numbers always resolve to a real URL, and retrieval degrades honestly
 rather than pretending a snippet is a document.
 """
 import json
+from pathlib import Path
 
 import pytest
 
@@ -725,3 +726,141 @@ def test_retrieval_index_upgrades_a_source_when_later_retrieved():
     better = _aggregate_retrieval(index, [], [])
     assert better["full_text"] == 1 and better["metadata_only"] == 0
     assert better["total_words"] == 9000
+
+
+# --- question agnosticism ---------------------------------------------------
+#
+# Guards against mobile/framework vocabulary creeping back into the prompts and
+# scoring tables. A hint written while tuning one question must never bias an
+# unrelated one, so the source itself is the thing under test.
+
+_DOMAIN_TERMS = [
+    "flutter", "react native", "android", "kotlin", "impeller", "hermes",
+    "apk", "aab", "frame rate", "frame rendering", "hot reload", "ui latency",
+    "fps", "startup time", "jetbrains", "android-only", "cross-platform delivery",
+    "graphics-heavy", "mobile app", "play store", "app store",
+]
+
+_PROMPT_MODULES = [
+    "backend/research/report.py",
+    "backend/research/extract.py",
+    "backend/research/relevance.py",
+    "backend/research/references.py",
+    "backend/research/evidence.py",
+    "backend/research/chunker.py",
+    "backend/research/fetch.py",
+    "backend/research/graph.py",
+    "backend/research/llm.py",
+    "backend/research/planner.py",
+    "backend/research/searcher.py",
+]
+
+
+def test_no_domain_specific_vocabulary_in_pipeline_source():
+    """No prompt or scoring table may assume a particular subject domain."""
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for rel in _PROMPT_MODULES:
+        text = (root / rel).read_text().lower()
+        for term in _DOMAIN_TERMS:
+            if term in text:
+                offenders.append(f"{rel}: {term}")
+    assert not offenders, "domain vocabulary leaked into the pipeline: " + ", ".join(offenders)
+
+
+def test_dimension_guidance_is_method_not_subject():
+    """Guidance must teach distinctions, not assume what is being compared."""
+    from backend.research.report import _DIMENSION_GUIDANCE, _FALLBACK_GUIDANCE
+
+    for name, text in list(_DIMENSION_GUIDANCE.items()) + [("fallback", _FALLBACK_GUIDANCE)]:
+        lowered = text.lower()
+        for term in _DOMAIN_TERMS:
+            assert term not in lowered, f"{name} guidance mentions {term}"
+
+
+def test_unrelated_question_gets_unrelated_sections():
+    """A non-computing question must not inherit the framework report structure."""
+    from backend.research.relevance import dimensions, targets
+
+    q = ("Compare the economic effects of the 2008 financial crisis and the 2020 "
+         "pandemic recession on global labour markets. Analyse employment, wages, "
+         "inequality, and policy response.")
+
+    assert dimensions(q) == ["employment", "wages", "inequality", "policy response"]
+    assert "react native" not in " ".join(dimensions(q)).lower()
+
+
+def test_same_mechanism_for_any_domain():
+    """Retrieval and chunking are domain-agnostic: identical output shape."""
+    from backend.research.chunker import chunk_document
+
+    for title, text in [
+        ("Climate", "## Radiative forcing\n\n" + "CO2 concentration rose sharply. " * 60),
+        ("Literature", "## Narrative voice\n\n" + "The narrator is unreliable throughout. " * 60),
+        ("Nutrition", "## Glycemic index\n\n" + "Legumes score lower than white bread. " * 60),
+    ]:
+        chunks = chunk_document(text, source_id="s", source_url="https://x.dev",
+                                source_title=title)
+        assert chunks, title
+        assert all(c.chunk_id.startswith("s#") for c in chunks), title
+        assert all(c.section for c in chunks), f"{title} lost its section path"
+        assert all(c.source_title == title for c in chunks), title
+
+
+def test_numeric_boost_fires_for_any_domain():
+    """The quantitative-content boost must not depend on computing units."""
+    from backend.research.relevance import _NUMBER
+
+    for sample in ["CO2 rose 45%", "unemployment hit 9.5 percent",
+                   "wages grew 3.2 %", "the crop yielded 4.2 tonnes",
+                   "the orchestra played 120 bpm", "deficit reached $1.4 billion"]:
+        assert _NUMBER.search(sample), f"no numeric boost for: {sample}"
+
+
+def test_target_extraction_keeps_compound_names_intact():
+    """A hyphen must not be treated as a word boundary.
+
+    "stream-of-consciousness" was previously truncated to "stream" because a
+    hyphen is a non-word character, so \\bof\\b matched inside the compound.
+    """
+    from backend.research.relevance import targets
+
+    q = ("Compare stream-of-consciousness and unreliable narration across "
+         "modernist fiction. Analyse narrative technique.")
+    found = targets(q)
+
+    assert "stream-of-consciousness" in found
+    assert "stream" not in found
+
+
+def test_target_extraction_works_outside_software():
+    from backend.research.relevance import targets
+
+    climate = targets("Compare the economic effects of the 2008 financial crisis "
+                      "and the 2020 pandemic recession on global labour markets. "
+                      "Analyse employment and wages.")
+    assert climate == ["the 2008 financial crisis", "the 2020 pandemic recession"]
+
+    bio = targets("Compare CRISPR and antisense oligonucleotide therapies for "
+                  "treating inherited disease. Analyse efficacy and cost.")
+    assert "CRISPR" in bio
+
+
+def test_prompts_contain_no_fixed_scenario_list():
+    """The scenario prompt must derive cases from the question, not a template."""
+    from backend.research.report import SCENARIO_SYSTEM
+
+    lowered = SCENARIO_SYSTEM.lower()
+    assert "derive the scenarios from this question" in lowered
+    for term in ("android", "mobile app", "graphics-heavy", "cross-platform"):
+        assert term not in lowered
+
+
+def test_dimension_prompt_delegates_domain_knowledge():
+    """The dimension prompt must not enumerate one field's sub-metrics."""
+    from backend.research.report import DIMENSION_SYSTEM
+
+    lowered = DIMENSION_SYSTEM.lower()
+    assert "work out what the dimension is actually made of" in lowered
+    for term in ("startup time", "frame rendering", "ui latency", "fps"):
+        assert term not in lowered

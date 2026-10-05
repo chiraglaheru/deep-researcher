@@ -53,13 +53,52 @@ def max_sources() -> int:
     return _int("RESEARCH_MAX_SOURCES", 30, 1, 200)
 
 
+def plan_dedup_threshold() -> float:
+    """Similarity above which two sub-questions count as the same question.
+
+    Scored on rare terms only, so shared entity names do not trigger it. Set to
+    1.0 to disable deduplication entirely.
+    """
+    return _float("PLAN_DEDUP_THRESHOLD", 0.70, 0.0, 1.0)
+
+
+def plan_dedup_gram_threshold() -> float:
+    """Similarity above which two sub-questions count as the same question.
+
+    Measured on character overlap, which is blind to wording. On real plans a
+    reworded duplicate scores ~0.61 and genuinely distinct dimensions score
+    0.05-0.09, so this sits in a wide gap. Set to 1.0 to disable this signal.
+    """
+    return _float("PLAN_DEDUP_GRAM_THRESHOLD", 0.45, 0.0, 1.0)
+
+
+def plan_dedup_regenerate() -> bool:
+    """Ask the planner for replacement sub-questions when duplicates are dropped."""
+    return _bool("PLAN_DEDUP_REGENERATE", True)
+
+
+def analyse_reuse_sources() -> bool:
+    """Skip sources already processed for evidence in an earlier round.
+
+    Each round re-visits the whole corpus otherwise, so extra rounds cost nearly
+    full price for no new material. Sources are re-processed only when their
+    retrieval grade improves, which happens when a later fetch finally succeeds.
+    """
+    return _bool("ANALYSE_REUSE_SOURCES", True)
+
+
 def results_per_search() -> int:
     return _int("RESEARCH_RESULTS_PER_SEARCH", 6, 1, 20)
 
 
+def rounds_ceiling() -> int:
+    """Hard upper bound on research depth, shared by the API and the UI."""
+    return _int("RESEARCH_MAX_ROUNDS_LIMIT", 10, 1, 50)
+
+
 def max_rounds() -> int:
     """Default research depth (gap-check loop passes)."""
-    return _int("RESEARCH_MAX_ROUNDS", 2, 1, 4)
+    return _int("RESEARCH_MAX_ROUNDS", 2, 1, rounds_ceiling())
 
 
 # --- retrieval limits ------------------------------------------------------
@@ -192,6 +231,45 @@ def report_quality_floor() -> float:
 
 # --- export ----------------------------------------------------------------
 
+# --- throttling ------------------------------------------------------------
+#
+# Free-tier providers do not fail politely: one 429 can cost the rest of the
+# day. Spacing calls out protects a per-minute budget by construction, and the
+# concurrency ceiling stops two concurrent runs from jointly exceeding it.
+#
+# Turning throttling off is the right choice once you are on paid subscriptions
+# with headroom; until then it trades wall-clock time for not being cut off.
+
+
+def throttle_llm() -> bool:
+    """Pace model calls. On by default while providers are free-tier."""
+    return _bool("THROTTLE_LLM", True)
+
+
+def throttle_llm_per_minute() -> float:
+    """Ceiling on model calls per minute. 0 disables pacing."""
+    return _float("THROTTLE_LLM_PER_MINUTE", 12.0, 0.0, 10_000.0)
+
+
+def throttle_llm_max_concurrent() -> int:
+    """Model calls in flight at once. 1 serialises across concurrent runs too."""
+    return _int("THROTTLE_LLM_MAX_CONCURRENT", 1, 1, 64)
+
+
+def throttle_search() -> bool:
+    """Pace search calls. Off by default: SerpApi is a paid, metered quota."""
+    return _bool("THROTTLE_SEARCH", False)
+
+
+def throttle_search_per_minute() -> float:
+    return _float("THROTTLE_SEARCH_PER_MINUTE", 60.0, 0.0, 10_000.0)
+
+
+def throttle_search_max_concurrent() -> int:
+    """Search already fans out across workers; this caps the total."""
+    return _int("THROTTLE_SEARCH_MAX_CONCURRENT", 4, 1, 64)
+
+
 def export_dir() -> str:
     return os.environ.get("EXPORT_DIR", "exports")
 
@@ -202,9 +280,34 @@ def export_enabled() -> bool:
 
 # --- global budgets (Sec 36: no uncontrolled crawling) ---------------------
 
-def total_llm_budget() -> int:
-    """Ceiling on pipeline LLM calls for one research run."""
-    return _int("RESEARCH_LLM_BUDGET", 40, 4, 500)
+# Measured on a representative run: extraction is ~8 batches plus ~5 per-source
+# synthesis calls, so each extra round costs roughly this many model calls, on
+# top of a fixed plan + contradiction + report cost. Used only to size a default
+# budget; an explicit RESEARCH_LLM_BUDGET always wins.
+LLM_FIXED_CALL_ESTIMATE = 17
+LLM_CALLS_PER_ROUND_ESTIMATE = 13
+
+
+def budget_estimate(rounds: int) -> int:
+    """Rough number of model calls a run of this depth is expected to need."""
+    return LLM_FIXED_CALL_ESTIMATE + LLM_CALLS_PER_ROUND_ESTIMATE * max(1, rounds)
+
+
+def total_llm_budget(rounds: int | None = None) -> int:
+    """Ceiling on model calls for one research run.
+
+    Defaults to a value scaled to the requested depth. A flat ceiling interacts
+    badly with the round limit: more rounds means more extraction, so a budget
+    sized for two rounds silently starves synthesis at four and the report comes
+    back partial. Set RESEARCH_LLM_BUDGET to pin it explicitly.
+    """
+    if os.environ.get("RESEARCH_LLM_BUDGET", "").strip():
+        return _int("RESEARCH_LLM_BUDGET", 40, 4, 500)
+    return budget_estimate(rounds if rounds else max_rounds())
+
+
+def budget_is_explicit() -> bool:
+    return bool(os.environ.get("RESEARCH_LLM_BUDGET", "").strip())
 
 
 def total_fetch_budget() -> int:

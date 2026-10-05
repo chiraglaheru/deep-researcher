@@ -37,9 +37,9 @@ Rules you must follow:
 1. GROUND EVERY RECORD IN ITS PASSAGE. Copy the supporting sentence verbatim into
    "quote". If you cannot quote it, do not report it. Never invent a number,
    a benchmark result, a paper finding, or a URL.
-2. STATE FINDINGS AS CHECKABLE CLAIMS, not as impressions. "Cold start on a
-   mid-range Android device measured 1.8s in this benchmark" -- not
-   "performance may be a consideration".
+2. STATE FINDINGS AS CHECKABLE CLAIMS, not as impressions. Give the specific
+   measured value or documented fact and the conditions it holds under -- not a
+   vague statement that something is "better", "faster" or "more mature".
 3. KEEP THE CONDITIONS WITH THE NUMBER. If a figure only holds for a debug build,
    one device, one workload or one date, say so in "detail".
 4. RECORD DISAGREEMENT. If a passage contradicts another passage or a known

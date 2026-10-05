@@ -34,12 +34,16 @@ _SKIP_HOSTS = (
     "patreon.com", "discord.", "t.me", "bit.ly", "t.co", "goo.gl",
 )
 
+# Hosts that tend to host primary or citable material, plus markers of a
+# benchmark/study. Deliberately domain-agnostic: naming a specific vendor or
+# framework here would bias reference discovery toward that domain for every
+# question, including ones where it is irrelevant.
 _INTERESTING = (
     "github.com", "arxiv.org", "doi.org", "dl.acm.org", "ieeexplore.ieee.org",
-    "acm.org", "springer.com", "sciencedirect.com", "nature.com", "medium.com",
-    ".edu", ".gov", "developer.android.com", "flutter.dev", "reactnative.dev",
-    "kotlinlang.org", "jetbrains.com", "stackoverflow.blog", "npmjs.com",
-    "pypi.org", "bench", "benchmark", "study", "survey", "paper",
+    "acm.org", "springer.com", "sciencedirect.com", "nature.com", "sciencedb",
+    ".edu", ".gov", ".int", "stackoverflow.blog", "npmjs.com", "pypi.org",
+    "readthedocs", "docs.", "bench", "benchmark", "study", "survey", "paper",
+    "report", "standard", "spec",
 )
 
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")

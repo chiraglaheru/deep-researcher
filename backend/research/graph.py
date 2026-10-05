@@ -78,6 +78,7 @@ class State(TypedDict, total=False):
     status: dict                          # research completion state
     fetcher: object                      # Fetcher, so the fetch budget is per run
     evidence_stats: dict
+    extracted_sources: dict                    # url -> grade already extracted
     export: dict
 
 
@@ -313,6 +314,37 @@ def _aggregate_retrieval(index: dict, chunks: list,
     }
 
 
+def _grade_rank(status: str) -> int:
+    return {"failed": 0, "metadata_only": 1, "partial": 2, "full": 3}.get(status, 0)
+
+
+def _unprocessed_chunks(state, chunks: list) -> tuple[list, list[dict]]:
+    """Chunks whose source still needs evidence extraction.
+
+    Later rounds re-chunk the whole corpus, so without this every extra round
+    re-pays for documents that were already processed -- roughly 11 of the 13
+    calls a round costs were redundant. A source is re-processed only when its
+    retrieval grade has *improved*, which happens when a later fetch finally
+    succeeds on something that was previously snippet-only or blocked.
+    """
+    seen: dict = dict(state.get("extracted_sources") or {})
+    if not config.analyse_reuse_sources():
+        return chunks, []
+
+    fresh: list = []
+    upgraded: list[dict] = []
+    for chunk in chunks:
+        url = chunk.source_url
+        grade = chunk.retrieval_status
+        if url not in seen:
+            fresh.append(chunk)
+            continue
+        if _grade_rank(grade) > _grade_rank(seen[url]):
+            fresh.append(chunk)
+            upgraded.append({"url": url, "from": seen[url], "to": grade})
+    return fresh, upgraded
+
+
 async def analyse(state):
     """Rank passages deterministically, then extract evidence in batched LLM calls.
 
@@ -347,8 +379,20 @@ async def analyse(state):
         notes.append("no retrieved passages available for evidence extraction")
         return {"extracted": merge([]), "source_synth": {}, "notes": notes}
 
+    candidates, upgraded = _unprocessed_chunks(state, chunks)
+    if upgraded:
+        notes.append(f"re-processing {len(upgraded)} source(s) whose retrieval "
+                     f"improved since they were last read")
+    skipped = len(chunks) - len(candidates)
+    if skipped and not candidates:
+        notes.append("no new or improved sources this round; reusing existing "
+                     "evidence rather than re-extracting the same documents")
+        return {"extracted": merge([]), "source_synth": {}, "notes": notes}
+    if skipped:
+        notes.append(f"skipped {skipped} passage(s) from sources already processed")
+
     budget = _budget(state)
-    scored = diversify(rank(chunks, question, state.get("plan")))
+    scored = diversify(rank(candidates, question, state.get("plan")))
     if not scored:
         notes.append("retrieved passages were not relevant enough to extract from")
         return {"extracted": merge([]), "source_synth": {}, "notes": notes}
@@ -356,15 +400,31 @@ async def analyse(state):
     records, extraction_notes = await asyncio.to_thread(
         extract_evidence, scored, question, state.get("plan"), budget)
     notes.extend(extraction_notes)
+
+    # Remember what was read, and how well, so the next round can skip it.
+    tracked = dict(state.get("extracted_sources") or {})
+    for chunk in candidates:
+        tracked.setdefault(chunk.source_url, chunk.retrieval_status)
+    for record in records:
+        tracked[record.source_url] = record.retrieval_status
+
     records = merge(records)
 
     synth: dict = {}
     if records and budget.available():
-        synth = await asyncio.to_thread(synthesise_sources, records, budget)
+        # Only assess sources that have not been assessed yet.
+        done: dict = dict(state.get("source_synth") or {})
+        todo = [r for r in records if r.source_id and r.source_id not in done]
+        if todo:
+            fresh_synth = await asyncio.to_thread(synthesise_sources, todo, budget)
+            done.update(fresh_synth)
+            synth = done
 
-    log.info("analysis: %d scored passages -> %d evidence records (total %d)",
-             len(scored), len(records) - len(previous), len(records))
-    return {"extracted": records, "source_synth": synth, "notes": notes}
+    log.info("analysis: %d/%d passages processed (%d already seen) -> %d new "
+             "records, %d total", len(scored), len(chunks), skipped,
+             len(records) - len(previous), len(records))
+    return {"extracted": records, "source_synth": synth,
+            "extracted_sources": tracked, "notes": notes}
 
 
 async def gap_check(state):

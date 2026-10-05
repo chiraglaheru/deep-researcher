@@ -470,6 +470,31 @@ deep-researcher/
 
 `backend/tools/` and `backend/evidence/` are the pre-LangGraph layer. They are still covered by tests but are no longer on the live path.
 
+## Sub-question planning
+
+A planner asked to split one question often returns the same sub-question twice.
+Duplicates waste a parallel search slot and skew the evidence base -- the same
+material is retrieved and cited twice while another dimension goes unresearched.
+
+`planner.make_plan()` therefore plans, deduplicates, and replaces:
+
+1. **Detect.** Two independent signals, each with its own threshold. Rare-term
+   overlap catches a hard restatement; character trigrams catch the same
+   question reworded, since they are blind to morphology. Weighting the term
+   overlap by rarity is what stops the shared entity names in a comparison
+   question from making genuinely different dimensions look like duplicates.
+2. **Replace.** The planner is asked again for sub-questions covering ground
+   none of the survivors reach, told explicitly what was rejected.
+3. **Re-filter.** Replacements can collide too, so the whole set is filtered
+   again rather than trusting the new text.
+
+If regeneration fails or returns nothing usable, the surviving plan is used
+unchanged -- a smaller plan beats no plan. If *everything* looks duplicated, one
+is kept rather than planning nothing.
+
+Tune with `PLAN_DEDUP_THRESHOLD`, `PLAN_DEDUP_GRAM_THRESHOLD` (set either to
+`1.0` to disable) and `PLAN_DEDUP_REGENERATE`.
+
 ## Research depth
 
 The UI's depth selector and the `rounds` parameter both feed the gap-check loop.
@@ -499,9 +524,24 @@ Raising the round limit without raising the budget is the one way to make
 things worse, so it is worth knowing which of the two is binding: look for
 `model-call budget auto-sized to N` in the server log at the start of a run.
 
-Each round also re-runs evidence extraction over the whole corpus, not just the
-newly discovered sources, so the marginal round is cheaper than it looks only
-when little new material is found.
+### Incremental analysis
+
+Later rounds re-chunk the whole corpus, so without tracking what has been read
+an extra round re-pays for documents already processed. `analyse` now skips
+sources it has already extracted from, and re-reads a source only when its
+retrieval grade *improves* -- a snippet that later became a real document is new
+material. Measured on a corpus of 10 documents with 2 new ones per round:
+
+| rounds | passages read before | after | saved |
+| --- | --- | --- | --- |
+| 1 | 10 | 10 | 0% |
+| 2 | 22 | 12 | 45% |
+| 3 | 36 | 14 | 61% |
+| 4 | 52 | 16 | 69% |
+
+Per-source synthesis is filtered the same way, so an extra round costs only its
+genuinely new material. Set `ANALYSE_REUSE_SOURCES=0` to restore the old
+behaviour.
 
 ## Testing
 

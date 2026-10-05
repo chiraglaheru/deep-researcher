@@ -53,6 +53,40 @@ def max_sources() -> int:
     return _int("RESEARCH_MAX_SOURCES", 30, 1, 200)
 
 
+def plan_dedup_threshold() -> float:
+    """Similarity above which two sub-questions count as the same question.
+
+    Scored on rare terms only, so shared entity names do not trigger it. Set to
+    1.0 to disable deduplication entirely.
+    """
+    return _float("PLAN_DEDUP_THRESHOLD", 0.70, 0.0, 1.0)
+
+
+def plan_dedup_gram_threshold() -> float:
+    """Similarity above which two sub-questions count as the same question.
+
+    Measured on character overlap, which is blind to wording. On real plans a
+    reworded duplicate scores ~0.61 and genuinely distinct dimensions score
+    0.05-0.09, so this sits in a wide gap. Set to 1.0 to disable this signal.
+    """
+    return _float("PLAN_DEDUP_GRAM_THRESHOLD", 0.45, 0.0, 1.0)
+
+
+def plan_dedup_regenerate() -> bool:
+    """Ask the planner for replacement sub-questions when duplicates are dropped."""
+    return _bool("PLAN_DEDUP_REGENERATE", True)
+
+
+def analyse_reuse_sources() -> bool:
+    """Skip sources already processed for evidence in an earlier round.
+
+    Each round re-visits the whole corpus otherwise, so extra rounds cost nearly
+    full price for no new material. Sources are re-processed only when their
+    retrieval grade improves, which happens when a later fetch finally succeeds.
+    """
+    return _bool("ANALYSE_REUSE_SOURCES", True)
+
+
 def results_per_search() -> int:
     return _int("RESEARCH_RESULTS_PER_SEARCH", 6, 1, 20)
 

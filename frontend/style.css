@@ -741,3 +741,9 @@ details summary {
 .report-card.is-failed {
     border-color: rgba(220, 90, 90, 0.45);
 }
+
+.controls-note {
+    font-size: 0.75rem;
+    opacity: 0.6;
+    margin: -0.4rem 0 0.9rem;
+}

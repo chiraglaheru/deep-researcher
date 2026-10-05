@@ -53,12 +53,12 @@
                 <div class="controls">
                     <label for="rounds">Research depth</label>
                     <select id="rounds">
-                        <option value="1">Quick (1 round)</option>
-                        <option value="2" selected>Standard (2 rounds)</option>
-                        <option value="3">Deep (3 rounds)</option>
-                        <option value="4">Exhaustive (4 rounds)</option>
+                        <!-- options are built from /api/config so the ceiling
+                             stays a backend setting, not a UI constant -->
                     </select>
                 </div>
+
+                <p class="controls-note" id="rounds-note" hidden></p>
 
                 <button id="research-button" type="submit">
                     Start Research →

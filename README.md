@@ -470,6 +470,39 @@ deep-researcher/
 
 `backend/tools/` and `backend/evidence/` are the pre-LangGraph layer. They are still covered by tests but are no longer on the live path.
 
+## Research depth
+
+The UI's depth selector and the `rounds` parameter both feed the gap-check loop.
+The ceiling is `RESEARCH_MAX_ROUNDS_LIMIT` (default 10), read by the API and by
+`/api/config`, so raising it needs no code change.
+
+**Depth and budget are coupled.** Measured on a representative run, each extra
+round costs about 13 model calls (~8 extraction batches plus ~5 per-source
+synthesis calls) on top of a fixed ~17:
+
+| rounds | model calls needed |
+| --- | --- |
+| 1 | ~30 |
+| 2 | ~43 |
+| 3 | ~56 |
+| 4 | ~69 |
+| 6 | ~95 |
+| 10 | ~147 |
+
+If `RESEARCH_LLM_BUDGET` is unset the budget auto-sizes to the requested depth,
+so deeper runs actually go deeper. If you pin it explicitly and it is too small,
+the planner logs a warning and the shortfall becomes a pipeline note, and the
+report comes back marked `PARTIAL` — a starved budget produces a shallower
+report, never a silently truncated one.
+
+Raising the round limit without raising the budget is the one way to make
+things worse, so it is worth knowing which of the two is binding: look for
+`model-call budget auto-sized to N` in the server log at the start of a run.
+
+Each round also re-runs evidence extraction over the whole corpus, not just the
+newly discovered sources, so the marginal round is cheaper than it looks only
+when little new material is found.
+
 ## Testing
 
 ```bash

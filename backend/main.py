@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -11,7 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.research.config import max_rounds as max_rounds_default
+from backend.research.config import rounds_ceiling as max_rounds_ceiling
 from backend.research.researcher import deep_research
+
+log = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -52,14 +57,35 @@ app.add_middleware(
 
 @app.get("/api/research")
 async def research(q: str, rounds: int = 2):
+    # Clamped against the configured ceiling rather than a hard-coded number, so
+    # raising RESEARCH_MAX_ROUNDS_LIMIT is enough to allow deeper runs.
+    ceiling = max_rounds_ceiling()
+    depth = max(1, min(rounds, ceiling))
+    if depth != rounds:
+        log.warning("rounds=%s clamped to %d (ceiling %d)", rounds, depth, ceiling)
+
     async def gen():
         try:
-            async for ev in deep_research(q, max(1, min(rounds, 4))):
+            async for ev in deep_research(q, depth):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         yield 'data: {"type":"done"}\n\n'
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/config")
+async def public_config():
+    """Limits the browser needs in order to offer valid choices."""
+    from backend.research.config import budget_estimate, total_llm_budget
+
+    ceiling = max_rounds_ceiling()
+    return {
+        "rounds_ceiling": ceiling,
+        "rounds_default": min(max_rounds_default(), ceiling),
+        "llm_budget": total_llm_budget(),
+        "budget_estimate": {str(r): budget_estimate(r) for r in range(1, ceiling + 1)},
+    }
 
 
 @app.get("/api/report/download")

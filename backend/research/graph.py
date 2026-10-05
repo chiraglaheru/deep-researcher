@@ -90,7 +90,8 @@ def _col(state) -> Collector:
 def _budget(state) -> CallBudget:
     budget = state.get("budget")
     if budget is None:
-        budget = CallBudget()
+        rounds = state.get("max_rounds")
+        budget = CallBudget(total=config.total_llm_budget(rounds))
     return budget
 
 
@@ -98,9 +99,34 @@ def planner(state):
     plan = make_plan(state["question"])
     pending = [{"source": s["source"], "query": s["query"]}
                for sq in plan.get("subquestions", []) for s in sq["searches"]]
-    return {"plan": plan, "pending": pending, "round": 1,
-            "seen": [f'{p["source"]}|{p["query"]}' for p in pending],
-            "budget": _budget(state)}
+    rounds = state["max_rounds"]
+
+    budget = _budget(state)
+    needed = config.budget_estimate(rounds)
+    notes: list[str] = []
+
+    if budget.total < needed:
+        # Deeper runs cost more per round, so a budget sized for fewer rounds
+        # starves synthesis and the report comes back partial rather than deeper.
+        log.warning(
+            "research depth %d round(s) expects about %d model calls but the "
+            "budget is %d; synthesis may be cut short. Raise "
+            "RESEARCH_LLM_BUDGET or lower the round count.",
+            rounds, needed, budget.total,
+        )
+        notes.append(
+            f"model-call budget ({budget.total}) is below the estimated need "
+            f"({needed}) for {rounds} round(s); the report may be partial")
+    elif not config.budget_is_explicit():
+        log.info("model-call budget auto-sized to %d for %d round(s)",
+                 budget.total, rounds)
+
+    update = {"plan": plan, "pending": pending, "round": 1,
+              "seen": [f'{p["source"]}|{p["query"]}' for p in pending],
+              "budget": budget}
+    if notes:
+        update["notes"] = notes
+    return update
 
 
 def route(state):

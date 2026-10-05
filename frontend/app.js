@@ -6,6 +6,8 @@ const button = document.getElementById("research-button");
 
 const roundsInput = document.getElementById("rounds");
 
+const roundsNote = document.getElementById("rounds-note");
+
 const errorBox = document.getElementById("error");
 
 const results = document.getElementById("results");
@@ -54,9 +56,66 @@ const reportLabel = document.getElementById("report-label");
 
 const reportCard = document.querySelector(".report-card");
 
+const ROUND_LABELS = {
+    1: "Quick",
+    2: "Standard",
+    3: "Deep",
+    4: "Exhaustive",
+};
+
 let currentQuestion = "";
 
 let currentMarkdown = "";
+
+
+// The round ceiling is a server setting, so the options are fetched rather than
+// hardcoded here. Without this the UI silently caps at whatever it shipped with.
+async function loadRoundOptions() {
+    if (!roundsInput) {
+        return;
+    }
+    const fallback = [1, 2, 3, 4];
+    let cfg = { rounds_ceiling: 4, rounds_default: 2, budget_estimate: {} };
+    try {
+        const response = await fetch("/api/config");
+        if (response.ok) {
+            cfg = await response.json();
+        }
+    } catch (error) {
+        // Backend unreachable: fall back to the conservative set.
+    }
+
+    const ceiling = Math.max(1, Math.min(cfg.rounds_ceiling || 4, 10));
+    roundsInput.textContent = "";
+    for (let n = 1; n <= ceiling; n += 1) {
+        const option = document.createElement("option");
+        option.value = String(n);
+        option.textContent =
+            (ROUND_LABELS[n] || `Round ${n}`) + ` (${n} round${n > 1 ? "s" : ""})`;
+        roundsInput.appendChild(option);
+    }
+    const preferred = Math.min(cfg.rounds_default || 2, ceiling);
+    roundsInput.value = String(preferred);
+
+    if (roundsNote) {
+        const estimates = cfg.budget_estimate || {};
+        const parts = [];
+        for (let n = 2; n <= Math.min(ceiling, 4); n += 1) {
+            if (estimates[String(n)]) {
+                parts.push(`${n} rounds ≈ ${estimates[String(n)]} model calls`);
+            }
+        }
+        if (parts.length) {
+            roundsNote.textContent =
+                "Deeper runs cost more model calls per round: " +
+                parts.join(", ") +
+                ". The budget scales automatically unless RESEARCH_LLM_BUDGET is set.";
+            roundsNote.hidden = false;
+        }
+    }
+}
+
+loadRoundOptions();
 
 
 form.addEventListener("submit", async (event) => {

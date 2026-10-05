@@ -57,9 +57,14 @@ def results_per_search() -> int:
     return _int("RESEARCH_RESULTS_PER_SEARCH", 6, 1, 20)
 
 
+def rounds_ceiling() -> int:
+    """Hard upper bound on research depth, shared by the API and the UI."""
+    return _int("RESEARCH_MAX_ROUNDS_LIMIT", 10, 1, 50)
+
+
 def max_rounds() -> int:
     """Default research depth (gap-check loop passes)."""
-    return _int("RESEARCH_MAX_ROUNDS", 2, 1, 4)
+    return _int("RESEARCH_MAX_ROUNDS", 2, 1, rounds_ceiling())
 
 
 # --- retrieval limits ------------------------------------------------------
@@ -202,9 +207,34 @@ def export_enabled() -> bool:
 
 # --- global budgets (Sec 36: no uncontrolled crawling) ---------------------
 
-def total_llm_budget() -> int:
-    """Ceiling on pipeline LLM calls for one research run."""
-    return _int("RESEARCH_LLM_BUDGET", 40, 4, 500)
+# Measured on a representative run: extraction is ~8 batches plus ~5 per-source
+# synthesis calls, so each extra round costs roughly this many model calls, on
+# top of a fixed plan + contradiction + report cost. Used only to size a default
+# budget; an explicit RESEARCH_LLM_BUDGET always wins.
+LLM_FIXED_CALL_ESTIMATE = 17
+LLM_CALLS_PER_ROUND_ESTIMATE = 13
+
+
+def budget_estimate(rounds: int) -> int:
+    """Rough number of model calls a run of this depth is expected to need."""
+    return LLM_FIXED_CALL_ESTIMATE + LLM_CALLS_PER_ROUND_ESTIMATE * max(1, rounds)
+
+
+def total_llm_budget(rounds: int | None = None) -> int:
+    """Ceiling on model calls for one research run.
+
+    Defaults to a value scaled to the requested depth. A flat ceiling interacts
+    badly with the round limit: more rounds means more extraction, so a budget
+    sized for two rounds silently starves synthesis at four and the report comes
+    back partial. Set RESEARCH_LLM_BUDGET to pin it explicitly.
+    """
+    if os.environ.get("RESEARCH_LLM_BUDGET", "").strip():
+        return _int("RESEARCH_LLM_BUDGET", 40, 4, 500)
+    return budget_estimate(rounds if rounds else max_rounds())
+
+
+def budget_is_explicit() -> bool:
+    return bool(os.environ.get("RESEARCH_LLM_BUDGET", "").strip())
 
 
 def total_fetch_budget() -> int:

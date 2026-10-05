@@ -27,7 +27,7 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch, request):
+def clean_env(monkeypatch, request, tmp_path):
     """Keep ambient credentials from leaking into tests.
 
     Tests marked ``live`` need the real key, so SERPAPI_KEY is left alone.
@@ -41,6 +41,18 @@ def clean_env(monkeypatch, request):
         for name in ("LLM_MOCK", "SEARCH_MOCK",
                      "LLM_MOCK_FAIL", "SEARCH_MOCK_FAIL"):
             monkeypatch.delenv(name, raising=False)
+
+    # Model health is file-backed in production; point it at a per-test file
+    # so cooldowns/ceilings never leak between cases via .cache/.
+    monkeypatch.setenv("MODEL_HEALTH_PATH", str(tmp_path / "model_health.json"))
+    try:
+        from backend.research import llm as llm_module
+        llm_module.reset_health(clear_file=True)
+    except Exception:
+        pass
+
+    # Wikipedia is a live network baseline; keep the suite offline.
+    monkeypatch.setenv("WIKI_ENABLED", "0")
 
     # Pacing is a runtime policy, not a correctness one. Leaving it on would add
     # real seconds to every test that exercises the model path; the tests that

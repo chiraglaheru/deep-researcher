@@ -11,29 +11,29 @@
 
 <body>
 
-    <header class="header">
-        <div class="brand">
-            <div class="logo">DR</div>
-
-            <div>
-                <h1>Deep Researcher</h1>
-                <p>AI-powered research assistant</p>
-            </div>
+    <div class="settings">
+        <button id="settings-button" type="button" class="settings-dots" title="Settings" aria-haspopup="true" aria-expanded="false" aria-controls="settings-menu">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+        </button>
+        <div id="settings-menu" class="settings-menu hidden" role="menu">
+                <button id="theme-toggle" type="button" class="ghost-button theme-toggle" title="Toggle light / dark mode" aria-live="polite" role="menuitem">
+                    <span class="theme-icons" aria-hidden="true">
+                        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    </span>
+                    <span class="theme-label">Light mode</span>
+                </button>
         </div>
-    </header>
+    </div>
 
 
     <main class="container">
 
         <section class="hero">
 
-            <div class="eyebrow">
-                DEEP RESEARCH
-            </div>
-
-            <h2>
-                Ask anything.
-                <span>Research deeply.</span>
+            <h2 class="hero-title">
+                From Scattered Web Documents
+                <span>to Structured Intelligence</span>
             </h2>
 
             <p class="description">
@@ -56,9 +56,11 @@
                         <!-- options are built from /api/config so the ceiling
                              stays a backend setting, not a UI constant -->
                     </select>
+                    <span class="info">
+                        <button type="button" class="info-dot" aria-label="About research depth" aria-describedby="rounds-tip">i</button>
+                        <span class="info-popup" id="rounds-tip" role="tooltip"></span>
+                    </span>
                 </div>
-
-                <p class="controls-note" id="rounds-note" hidden></p>
 
                 <div class="controls">
                     <label for="throttle-toggle">Request pacing</label>
@@ -66,9 +68,11 @@
                         <option value="1" selected>Throttled (protect free tiers)</option>
                         <option value="0">Unthrottled (faster, use paid tiers)</option>
                     </select>
+                    <span class="info">
+                        <button type="button" class="info-dot" aria-label="About request pacing" aria-describedby="throttle-tip">i</button>
+                        <span class="info-popup" id="throttle-tip" role="tooltip"></span>
+                    </span>
                 </div>
-
-                <p class="controls-note" id="throttle-note" hidden></p>
 
                 <button id="research-button" type="submit">
                     Start Research →

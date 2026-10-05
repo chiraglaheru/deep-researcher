@@ -90,6 +90,7 @@ async def deep_research(question: str, max_rounds: int = 3):
                 yield {
                     "type": "report",
                     "data": upd["report"],
+                    "html": upd.get("report_html") or "",
                     "sources": evidence,
                     "stats": upd.get("evidence_stats") or {},
                     "retrieval": stats,

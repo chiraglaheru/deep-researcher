@@ -2,30 +2,163 @@
     box-sizing: border-box;
 }
 
+@font-face {
+    font-family: "AnthropicSerif";
+    src: url("./Anthropic_font/AnthropicSerif-Display-Regular-Static.otf") format("opentype");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
 :root {
     font-family:
+        "AnthropicSerif",
         Inter,
         system-ui,
         -apple-system,
         BlinkMacSystemFont,
         "Segoe UI",
-        sans-serif;
+        serif;
 
     background: #090909;
     color: #eeeeee;
+
+    --page-bg: #090909;
+    --card-bg: #101010;
+    --report-bg: transparent;
+    --ink: #eeeeee;
+    --muted: #999;
+}
+
+:root[data-theme="light"] {
+    background: #F7F5F0;
+    color: #1d1a16;
+
+    --page-bg: #F7F5F0;
+    --card-bg: #fffdf9;
+    --report-bg: #F3EFE7;
+    --ink: #1d1a16;
+    --muted: #6b6259;
 }
 
 body {
     margin: 0;
     min-width: 320px;
-    background:
-        radial-gradient(
-            circle at 50% 0%,
-            #1b1b1b 0,
-            #090909 45%
-        );
-
+    background: var(--page-bg);
+    color: var(--ink);
+    font-family: inherit;
     min-height: 100vh;
+}
+
+:root[data-theme="light"] body {
+    background: #F7F5F0;
+}
+
+.header-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* Floating settings (3-dot) menu. Fixed so it stays put during scroll. */
+.settings {
+    position: fixed;
+    top: 12px;
+    right: 10px;
+    z-index: 100;
+}
+
+.settings-dots {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(20, 20, 20, 0.85);
+    color: #ccc;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+}
+
+.settings-dots svg {
+    width: 18px;
+    height: 18px;
+}
+
+.settings-dots:hover {
+    background: rgba(40, 40, 40, 0.9);
+    color: #fff;
+}
+
+:root[data-theme="light"] .settings-dots {
+    background: rgba(255, 253, 249, 0.92);
+    border-color: #e3ddd0;
+    color: #6b6259;
+}
+
+:root[data-theme="light"] .settings-dots:hover {
+    color: #1d1a16;
+}
+
+.settings-menu {
+    position: absolute;
+    top: 44px;
+    right: 0;
+    min-width: 190px;
+    padding: 6px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(20, 20, 20, 0.97);
+    box-shadow: 0 16px 50px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="light"] .settings-menu {
+    background: #fffdf9;
+    border-color: #e3ddd0;
+    box-shadow: 0 16px 50px rgba(60, 50, 30, 0.18);
+}
+
+.settings-menu .theme-toggle {
+    width: 100%;
+    justify-content: flex-start;
+}
+
+:root[data-theme="light"] .header {
+    border-bottom-color: #e3ddd0;
+    background: rgba(247, 245, 240, 0.9);
+}
+
+:root[data-theme="light"] .card {
+    background: var(--card-bg);
+    border-color: #e3ddd0;
+}
+
+:root[data-theme="light"] .report-card .report {
+    background: #F3EFE7;
+    border: 1px solid #e3ddd0;
+    border-radius: 10px;
+    padding: 1.2rem 1.4rem;
+}
+
+:root[data-theme="light"] .hero h2 span,
+:root[data-theme="light"] .description,
+:root[data-theme="light"] .brand p {
+    color: #6b6259;
+}
+
+:root[data-theme="light"] #research-form {
+    background: #fffdf9;
+    border-color: #e3ddd0;
+}
+
+:root[data-theme="light"] textarea {
+    color: #1d1a16;
+}
+
+:root[data-theme="light"] .report {
+    color: #2a2520;
 }
 
 
@@ -45,6 +178,11 @@ body {
     display: flex;
     align-items: center;
     gap: 14px;
+}
+
+.brand-minimal {
+    padding: 12px 24px;
+    justify-content: flex-end;
 }
 
 .logo {
@@ -84,7 +222,7 @@ body {
 
     margin: auto;
 
-    padding: 90px 24px 100px;
+    padding: 56px 24px 100px;
 }
 
 
@@ -107,14 +245,21 @@ body {
     letter-spacing: 0.16em;
 }
 
-.hero h2 {
-    margin: 18px 0;
+.hero h2,
+.hero-title {
+    margin: 18px auto;
+    max-width: 20ch;
 
-    font-size: clamp(42px, 7vw, 72px);
+    font-size: clamp(30px, 5vw, 52px);
 
-    line-height: 0.98;
+    line-height: 1.12;
+    text-wrap: balance;
 
-    letter-spacing: -0.05em;
+    /* Character spacing, excluding spaces: letter-spacing widens every
+       glyph including the space itself, so an equal negative word-spacing
+       cancels the extra inter-word gap back to a normal space. */
+    letter-spacing: 0.07em;
+    word-spacing: -0.07em;
 }
 
 .hero h2 span {
@@ -166,6 +311,138 @@ textarea {
     padding: 18px;
 
     font-size: 16px;
+
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a transparent;
+}
+
+textarea::-webkit-scrollbar {
+    width: 6px;
+}
+
+textarea::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+textarea::-webkit-scrollbar-thumb {
+    background: #3a3a3a;
+    border-radius: 999px;
+}
+
+textarea::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+:root[data-theme="light"] textarea {
+    scrollbar-color: #d8d0bf transparent;
+}
+
+:root[data-theme="light"] textarea::-webkit-scrollbar-thumb {
+    background: #d8d0bf;
+}
+
+:root[data-theme="light"] textarea::-webkit-scrollbar-thumb:hover {
+    background: #c3b89f;
+}
+
+:root[data-theme="light"] #research-button {
+    background: #D97756;
+    color: #fff;
+    font-weight: 800;
+}
+
+:root[data-theme="light"] #research-button:hover {
+    background: #c96644;
+}
+
+:root[data-theme="light"] #research-button:disabled {
+    background: #D97756;
+    color: #fff;
+}
+
+/* ---- info (i) tooltips next to the option selects ------------------------ */
+
+.info {
+    position: relative;
+    display: none;
+    margin-left: auto;
+}
+
+.info.has-tip {
+    display: inline-flex;
+}
+
+.info-dot {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.07);
+    color: #bbb;
+    font-size: 11px;
+    font-weight: 700;
+    font-style: italic;
+    line-height: 1;
+    cursor: help;
+}
+
+.info-dot:hover {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+:root[data-theme="light"] .info-dot {
+    background: #efe9dc;
+    border-color: #e3ddd0;
+    color: #6b6259;
+}
+
+:root[data-theme="light"] .info-dot:hover {
+    color: #1d1a16;
+    border-color: #c3b89f;
+}
+
+.info-popup {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 50;
+    width: max-content;
+    max-width: 280px;
+    padding: 0.65rem 0.8rem;
+    border-radius: 12px;
+    font-size: 0.76rem;
+    line-height: 1.55;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    white-space: normal;
+    background: #1c1c1c;
+    color: #ddd;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+    pointer-events: none;
+}
+
+:root[data-theme="light"] .info-popup {
+    background: #fffdf9;
+    color: #2a2520;
+    border-color: #e3ddd0;
+    box-shadow: 0 12px 40px rgba(60, 50, 30, 0.18);
+}
+
+.info:hover .info-popup,
+.info:focus-within .info-popup {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
 }
 
 textarea::placeholder {
@@ -452,7 +729,7 @@ button:disabled {
 @media (max-width: 600px) {
 
     .container {
-        padding-top: 60px;
+        padding-top: 56px;
     }
 
     .hero h2 {
@@ -482,11 +759,17 @@ button:disabled {
 
 .controls select {
     background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 0;
+    outline: 0;
     border-radius: 6px;
     color: inherit;
     font: inherit;
     padding: 0.35rem 0.5rem;
+}
+
+:root[data-theme="light"] .controls select {
+    background: #efe9dc;
+    border: 0;
 }
 
 .card-note {
@@ -746,4 +1029,151 @@ details summary {
     font-size: 0.75rem;
     opacity: 0.6;
     margin: -0.4rem 0 0.9rem;
+}
+
+/* ---- citation hover reference boxes ------------------------------------ */
+
+.report a.citation {
+    position: relative;
+}
+
+.cite-popup {
+    position: absolute;
+    z-index: 40;
+    max-width: 320px;
+    min-width: 220px;
+    padding: 0.65rem 0.8rem;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    font-weight: 400;
+    vertical-align: baseline;
+    white-space: normal;
+    background: #1c1c1c;
+    color: #eee;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+}
+
+:root[data-theme="light"] .cite-popup {
+    background: #fffdf9;
+    color: #2a2520;
+    border-color: #e3ddd0;
+    box-shadow: 0 12px 40px rgba(60, 50, 30, 0.18);
+}
+
+.cite-popup strong {
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.cite-popup a {
+    overflow-wrap: anywhere;
+}
+
+/* ---- theme toggle (moon <-> sun) --------------------------------------- */
+
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: auto;
+    transition: background-color 0.25s ease, border-color 0.25s ease,
+        transform 0.15s ease;
+}
+
+.theme-toggle:active {
+    transform: scale(0.94);
+}
+
+.theme-icons {
+    position: relative;
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+}
+
+.theme-icons svg {
+    position: absolute;
+    inset: 0;
+    width: 16px;
+    height: 16px;
+    transition: opacity 0.25s ease, transform 0.3s ease;
+}
+
+.theme-icons .icon-moon {
+    opacity: 1;
+    transform: rotate(0deg) scale(1);
+}
+
+.theme-icons .icon-sun {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.5);
+}
+
+:root[data-theme="light"] .theme-icons .icon-moon {
+    opacity: 0;
+    transform: rotate(90deg) scale(0.5);
+}
+
+:root[data-theme="light"] .theme-icons .icon-sun {
+    opacity: 1;
+    transform: rotate(0deg) scale(1);
+}
+
+.theme-label {
+    transition: opacity 0.2s ease;
+}
+
+.theme-toggle.theme-spin .theme-icons {
+    animation: theme-pop 0.3s ease;
+}
+
+@keyframes theme-pop {
+    50% {
+        transform: rotate(20deg) scale(1.15);
+    }
+}
+
+/* ---- theme switch reveal: top-left -> bottom-right in 0.7s -------------- */
+
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation-duration: 0.7s;
+    animation-timing-function: ease-in-out;
+}
+
+::view-transition-old(root) {
+    animation-name: theme-fade-out;
+}
+
+::view-transition-new(root) {
+    animation-name: theme-reveal;
+}
+
+@keyframes theme-reveal {
+    from {
+        clip-path: circle(0 at 0 0);
+    }
+    to {
+        clip-path: circle(150vmax at 0 0);
+    }
+}
+
+@keyframes theme-fade-out {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation-duration: 0.01s;
+    }
 }

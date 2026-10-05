@@ -6,11 +6,11 @@ const button = document.getElementById("research-button");
 
 const roundsInput = document.getElementById("rounds");
 
-const roundsNote = document.getElementById("rounds-note");
+const roundsNote = document.getElementById("rounds-tip");
 
 const throttleToggle = document.getElementById("throttle-toggle");
 
-const throttleNote = document.getElementById("throttle-note");
+const throttleNote = document.getElementById("throttle-tip");
 
 const throttleStats = document.getElementById("throttle-stats");
 
@@ -116,7 +116,10 @@ async function loadRoundOptions() {
                 "Deeper runs cost more model calls per round: " +
                 parts.join(", ") +
                 ". The budget scales automatically unless RESEARCH_LLM_BUDGET is set.";
-            roundsNote.hidden = false;
+            const info = roundsNote.closest(".info");
+            if (info) {
+                info.classList.add("has-tip");
+            }
         }
     }
 }
@@ -162,12 +165,14 @@ function loadThrottleState() {
                     + `(~${spacing}s apart, ${cfg.max_concurrent} at a time). `
                     + "Slower, but far less likely to exhaust a free-tier quota. "
                     + "Choose Unthrottled once you are on paid plans with headroom.";
-                throttleNote.hidden = false;
             } else {
                 throttleNote.textContent =
                     "Pacing is off. Calls go out as fast as the pipeline allows, "
                     + "which risks exhausting free-tier quotas.";
-                throttleNote.hidden = false;
+            }
+            const info = throttleNote.closest(".info");
+            if (info) {
+                info.classList.add("has-tip");
             }
         })
         .catch(() => { /* backend unreachable: keep the default selection */ });
@@ -751,12 +756,16 @@ function renderStatus(status) {
 function renderReport(data) {
     currentMarkdown = data.data || "";
 
-    // Older runs may return plain text rather than markdown.
-    if (window.renderMarkdown) {
+    // Server pre-compiles markdown to HTML to avoid freezing the UI on
+    // 15k-word reports. The client renderer is only a fallback for old payloads.
+    if (data.html) {
+        report.innerHTML = data.html;
+    } else if (window.renderMarkdown) {
         report.innerHTML = window.renderMarkdown(currentMarkdown);
     } else {
         report.textContent = currentMarkdown;
     }
+    wireCitationTooltips();
 
     const words = currentMarkdown.split(/\s+/).filter(Boolean).length;
 
@@ -819,3 +828,130 @@ function wireDownload() {
 function formatNumber(value) {
     return Number(value || 0).toLocaleString("en-US");
 }
+
+
+function wireCitationTooltips() {
+    const cites = report.querySelectorAll("a.citation");
+    for (const cite of cites) {
+        if (cite.dataset.wired) {
+            continue;
+        }
+        cite.dataset.wired = "1";
+        cite.addEventListener("mouseenter", () => {
+            const number = cite.dataset.ref || cite.textContent.replace(/[^0-9]/g, "");
+            const target = number && document.getElementById(`ref-${number}`);
+            if (!target) {
+                return;
+            }
+            const popup = document.createElement("span");
+            popup.className = "cite-popup";
+            const title = document.createElement("strong");
+            title.textContent = `Reference [${number}]`;
+            popup.appendChild(title);
+            const body = document.createElement("span");
+            body.textContent = target.textContent.trim().slice(0, 400);
+            popup.appendChild(body);
+            cite.appendChild(popup);
+            const rect = cite.getBoundingClientRect();
+            popup.style.left = "0";
+            popup.style.bottom = "1.4em";
+            if (rect.left < 340) {
+                popup.style.left = "0";
+            }
+        });
+        cite.addEventListener("mouseleave", () => {
+            const popup = cite.querySelector(".cite-popup");
+            if (popup) {
+                popup.remove();
+            }
+        });
+        cite.addEventListener("focus", () => {
+            cite.dispatchEvent(new Event("mouseenter"));
+        });
+        cite.addEventListener("blur", () => {
+            cite.dispatchEvent(new Event("mouseleave"));
+        });
+    }
+}
+
+
+(function initSettingsMenu() {
+    const button = document.getElementById("settings-button");
+    const menu = document.getElementById("settings-menu");
+    if (!button || !menu) {
+        return;
+    }
+    function setOpen(open) {
+        menu.classList.toggle("hidden", !open);
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setOpen(menu.classList.contains("hidden"));
+    });
+    menu.addEventListener("click", (event) => {
+        event.stopPropagation();
+    });
+    document.addEventListener("click", () => setOpen(false));
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            setOpen(false);
+        }
+    });
+})();
+
+
+(function initTheme() {
+    const root = document.documentElement;
+    const toggle = document.getElementById("theme-toggle");
+    const label = toggle ? toggle.querySelector(".theme-label") : null;
+    let saved = null;
+    try {
+        saved = localStorage.getItem("dr-theme");
+    } catch (error) {
+        saved = null;
+    }
+    if (saved === "light") {
+        root.dataset.theme = "light";
+    }
+    function syncLabel() {
+        const light = root.dataset.theme === "light";
+        if (label) {
+            label.textContent = light ? "Dark mode" : "Light mode";
+        } else if (toggle) {
+            toggle.textContent = light ? "Dark mode" : "Light mode";
+        }
+        if (toggle) {
+            toggle.title = light ? "Switch to dark mode" : "Switch to light mode";
+        }
+    }
+    syncLabel();
+    if (toggle) {
+        toggle.addEventListener("click", () => {
+            const apply = () => {
+                const light = root.dataset.theme !== "light";
+                if (light) {
+                    root.dataset.theme = "light";
+                } else {
+                    delete root.dataset.theme;
+                }
+                try {
+                    localStorage.setItem("dr-theme", light ? "light" : "dark");
+                } catch (error) {
+                    /* private mode: theme just does not persist */
+                }
+                syncLabel();
+                toggle.classList.remove("theme-spin");
+                void toggle.offsetWidth;
+                toggle.classList.add("theme-spin");
+            };
+            // Circular reveal from the top-left corner to the bottom-right
+            // in 0.3s. Falls back to an instant swap where unsupported.
+            if (document.startViewTransition) {
+                document.startViewTransition(apply);
+            } else {
+                apply();
+            }
+        });
+    }
+})();

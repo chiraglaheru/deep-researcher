@@ -17,6 +17,7 @@ numbering, the reference table -- is deterministic.
 import asyncio
 import logging
 import operator
+import re
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -31,11 +32,13 @@ from .extract import (extract_evidence, find_conflicts,
                       findings_from_contradictions, synthesise_sources)
 from .fetch import FAILED, Fetcher, FULL, METADATA, PARTIAL, snippet_only_doc
 from .llm import CallBudget, ask
+from .markdown_html import render_markdown_html
 from .planner import SOURCES, make_plan
 from .references import candidates, describe
 from .relevance import diversify, rank, source_context
 from .report import generate_report, status_headline, write_report
 from .searcher import search
+from .wiki import fetch_wikipedia
 
 log = logging.getLogger(__name__)
 
@@ -198,6 +201,30 @@ async def retrieve(state):
                     if meta.get("status") in ("full", "partial")}
     todo = [u for u in urls if u not in already_read]
 
+    # Wikipedia baseline first: zero-cost encyclopedic grounding fetched
+    # before any LLM call. Runs once (round 1) and is folded into the same
+    # index, so later rounds treat it as already-read.
+    if not index and config.wiki_enabled():
+        try:
+            wiki_docs = await asyncio.to_thread(fetch_wikipedia, question) \
+                if question else []
+        except Exception as exc:
+            log.info("wikipedia baseline failed: %s", exc)
+            wiki_docs = []
+        for doc in wiki_docs or []:
+            if doc.url not in index and doc.usable:
+                index[doc.url] = {
+                    "status": doc.status,
+                    "method": doc.method,
+                    "words": doc.word_count,
+                    "title": doc.title or doc.url,
+                    "url": doc.url,
+                    "limitation": doc.limitation,
+                }
+                known_documents[doc.url] = doc
+        if wiki_docs:
+            notes.append(f"wikipedia baseline: {len(wiki_docs)} article(s) pre-loaded")
+
     try:
         fetched = await asyncio.to_thread(fetcher.fetch_many, todo) if todo else []
     except Exception as exc:
@@ -318,6 +345,46 @@ def _grade_rank(status: str) -> int:
     return {"failed": 0, "metadata_only": 1, "partial": 2, "full": 3}.get(status, 0)
 
 
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _query_tokens(query: str) -> set[str]:
+    return {w for w in _WORD.findall(str(query or "").lower()) if len(w) > 2}
+
+
+def is_duplicate_query(source: str, query: str, seen: list[str],
+                       threshold: float | None = None) -> bool:
+    """True when this follow-up repeats a query that already ran.
+
+    Exact ``source|query`` matches are duplicates. Paraphrases are caught with
+    a lightweight token-overlap (Jaccard) filter on the same source, so
+    "latest LLM benchmarks 2026" does not re-run "2026 latest LLM benchmark".
+    """
+    key = f"{source}|{query}"
+    if key in seen:
+        return True
+    limit = threshold if threshold is not None else config.gap_dup_threshold()
+    mine = _query_tokens(query)
+    if not mine:
+        return False
+    for entry in seen:
+        try:
+            seen_source, seen_query = entry.split("|", 1)
+        except ValueError:
+            continue
+        if seen_source != source:
+            continue
+        other = _query_tokens(seen_query)
+        if not other:
+            continue
+        union = mine | other
+        jaccard = len(mine & other) / len(union) if union else 0.0
+        overlap_min = len(mine & other) / min(len(mine), len(other))
+        if jaccard >= limit or overlap_min >= 0.85:
+            return True
+    return False
+
+
 def _unprocessed_chunks(state, chunks: list) -> tuple[list, list[dict]]:
     """Chunks whose source still needs evidence extraction.
 
@@ -393,6 +460,16 @@ async def analyse(state):
 
     budget = _budget(state)
     scored = diversify(rank(candidates, question, state.get("plan")))
+    # Belt-and-braces: the ranked set must contain only newly discovered
+    # sources. Candidates are already fresh, but rank/diversify operate on
+    # ids that could theoretically reintroduce an old URL, so filter the
+    # ranked output down to fresh URLs before any extraction call is paid for.
+    fresh_urls = {c.source_url for c in candidates}
+    before_rank = len(scored)
+    scored = [s for s in scored if s.chunk.source_url in fresh_urls]
+    if len(scored) < before_rank:
+        notes.append(f"filtered {before_rank - len(scored)} ranked passage(s) "
+                     f"from already-processed sources before extraction")
     if not scored:
         notes.append("retrieved passages were not relevant enough to extract from")
         return {"extracted": merge([]), "source_synth": {}, "notes": notes}
@@ -453,14 +530,20 @@ async def gap_check(state):
         gap = {"sufficient": False, "missing": "malformed gap-check response", "follow_ups": []}
 
     new = []
+    dropped = 0
     if not gap.get("sufficient"):
         for f in (gap.get("follow_ups") or [])[:3]:
             if not isinstance(f, dict):
                 continue
-            key = f'{f.get("source")}|{f.get("query")}'
-            if f.get("source") in SOURCES and f.get("query") and key not in seen:
-                new.append({"source": f["source"], "query": f["query"]})
-                seen.append(key)
+            if f.get("source") not in SOURCES or not f.get("query"):
+                continue
+            if is_duplicate_query(f["source"], f["query"], seen):
+                dropped += 1
+                continue
+            new.append({"source": f["source"], "query": f["query"]})
+            seen.append(f'{f.get("source")}|{f.get("query")}')
+    if dropped:
+        gap = dict(gap, dropped_duplicates=dropped)
     return {"gap": gap, "pending": new, "seen": seen, "round": rnd + 1}
 
 
@@ -484,6 +567,11 @@ async def synthesizer(state):
         generate_report, question, col, contradictions,
         records, state.get("source_synth") or {}, notes, state.get("plan"), _budget(state))
     report = result.markdown
+    try:
+        report_html = render_markdown_html(report) if report else ""
+    except Exception as exc:
+        log.warning("server-side HTML compile failed: %s", exc)
+        report_html = ""
 
     stats = statistics(records) if records else {}
     export = {}
@@ -505,8 +593,9 @@ async def synthesizer(state):
     elif result.status == "failed":
         log.error("research FAILED: no usable report could be generated")
 
-    return {"report": report, "evidence_stats": stats, "export": export,
-            "status": completion}
+    return {"report": report, "report_html": report_html,
+              "evidence_stats": stats, "export": export,
+              "status": completion}
 
 
 def build_graph():

@@ -36,7 +36,7 @@ function slugifyHeading(text) {
 }
 
 function citationLink(number) {
-    return '<a class="citation" href="#ref-' + number +
+    return '<a class="citation" href="#ref-' + number + '" data-ref="' + number +
         '" title="Go to reference ' + number + '">[' + number + "]</a>";
 }
 
@@ -64,12 +64,19 @@ function renderInline(text) {
     //
     // The lookbehind matters: "a[0]" is array indexing, not a citation, and
     // linking it would produce a dangling #ref-0 anchor.
+    // Citations are pulled to placeholders first so the [n] inside the
+    // generated <a> tag is not re-matched by the single-citation pass.
+    const cites = [];
     out = out.replace(/(?<![\w\]])\[(\d{1,3})\]\s*\[(\d{1,3})\]/g,
         function (m, a, b) {
-            return citationLink(a) + citationLink(b);
+            cites.push(a);
+            const first = "@@CITE" + (cites.length - 1) + "@@";
+            cites.push(b);
+            return first + "@@CITE" + (cites.length - 1) + "@@";
         });
     out = out.replace(/(?<![\w\]])\[(\d{1,3})\](?!\()/g, function (m, n) {
-        return citationLink(n);
+        cites.push(n);
+        return "@@CITE" + (cites.length - 1) + "@@";
     });
 
     out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (match, label, href) {
@@ -95,6 +102,10 @@ function renderInline(text) {
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
     out = out.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+
+    out = out.replace(/@@CITE(\d+)@@/g, function (m, i) {
+        return citationLink(cites[Number(i)]);
+    });
 
     out = out.replace(/@@CODE(\d+)@@/g, function (m, i) {
         return "<code>" + codes[Number(i)] + "</code>";

@@ -46,6 +46,28 @@ def analysis_enabled() -> bool:
     return _bool("RESEARCH_ANALYZE", True)
 
 
+# --- wikipedia baseline ------------------------------------------------------
+
+def wiki_enabled() -> bool:
+    """Fetch Wikipedia summaries before any LLM call. Default on."""
+    return _bool("WIKI_ENABLED", True)
+
+
+def wiki_max_docs() -> int:
+    """Wikipedia baseline documents per run."""
+    return _int("WIKI_MAX_DOCS", 3, 0, 10)
+
+
+def gap_dup_threshold() -> float:
+    """Token-overlap (Jaccard) above which a follow-up repeats a seen query."""
+    return _float("GAP_DUP_THRESHOLD", 0.60, 0.0, 1.0)
+
+
+def model_health_path() -> str:
+    """File-backed registry for model cooldowns and prompt ceilings."""
+    return os.environ.get("MODEL_HEALTH_PATH", ".cache/model_health.json")
+
+
 # --- search / source limits ------------------------------------------------
 
 def max_sources() -> int:

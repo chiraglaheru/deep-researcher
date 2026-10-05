@@ -146,25 +146,125 @@ def oversized_cooldown_s() -> float:
 
 # --- model health ---------------------------------------------------------
 #
-# Per-process record of which models are currently unusable, so a model that
-# just returned 429/503 is not immediately retried by the next pipeline stage.
+# Shared file-backed registry so a restart, reload or second worker does not
+# forget which models are cooling down or which prompt sizes they reject.
+# In-memory dicts stay the hot path; the JSON file at MODEL_HEALTH_PATH
+# (.cache/model_health.json by default) is the durable copy.
 
 _health_lock = threading.Lock()
-_cooldowns: dict[str, tuple[float, str]] = {}   # model -> (until, reason)
+_cooldowns: dict[str, tuple[float, str]] = {}   # model -> (until_monotonic, reason)
+_last_health_mtime: float | None = None
+
+
+def _repo_root() -> str:
+    from pathlib import Path
+    return str(Path(__file__).resolve().parents[2])
+
+
+def _health_path() -> str:
+    from pathlib import Path
+    raw = os.environ.get("MODEL_HEALTH_PATH", ".cache/model_health.json")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path(_repo_root()) / path
+    return str(path)
+
+
+def _load_health_from_disk() -> None:
+    """Merge durable cooldowns/ceilings into memory if the file changed."""
+    global _last_health_mtime
+    import json as _json
+    path = _health_path()
+    try:
+        import os as _os
+        mtime = _os.path.getmtime(path)
+    except OSError:
+        return
+    if _last_health_mtime is not None and mtime <= _last_health_mtime:
+        return
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = _json.load(handle)
+    except Exception:
+        return
+    now_mono = _now()
+    now_wall = time.time()
+    for model, entry in (data.get("cooldowns") or {}).items():
+        try:
+            until_wall = float(entry.get("until_wall", 0))
+            reason = str(entry.get("reason", "cooling down"))
+        except Exception:
+            continue
+        left = until_wall - now_wall
+        if left <= 0:
+            continue
+        current = _cooldowns.get(model)
+        if current is None or current[0] < now_mono + left:
+            _cooldowns[model] = (now_mono + left, reason)
+    for model, tokens in (data.get("ceilings") or {}).items():
+        try:
+            tokens = int(tokens)
+        except Exception:
+            continue
+        if tokens > 0 and _prompt_ceilings.get(model) != tokens:
+            previous = _prompt_ceilings.get(model)
+            if previous is None or tokens < previous:
+                _prompt_ceilings[model] = tokens
+    _last_health_mtime = mtime
+
+
+def _save_health_to_disk() -> None:
+    import json as _json
+    path = _health_path()
+    try:
+        from pathlib import Path as _Path
+        now_wall = time.time()
+        payload = {"cooldowns": {}, "ceilings": dict(_prompt_ceilings)}
+        for model, (until_mono, reason) in _cooldowns.items():
+            left = until_mono - _now()
+            if left <= 0:
+                continue
+            payload["cooldowns"][model] = {
+                "until_wall": now_wall + left,
+                "reason": reason,
+            }
+        _Path(path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            _json.dump(payload, handle)
+        import os as _os
+        _os.replace(tmp, path)
+        try:
+            global _last_health_mtime
+            _last_health_mtime = _os.path.getmtime(path)
+        except OSError:
+            pass
+    except Exception as exc:
+        log.debug("model health persist failed: %s", exc)
+
+
+def _sync_health() -> None:
+    with _health_lock:
+        _load_health_from_disk()
 
 
 def _cool_down(model: str, seconds: float, reason: str) -> None:
     with _health_lock:
         _cooldowns[model] = (_now() + seconds, reason)
+    _save_health_to_disk()
 
 
 def _clear_cooldown(model: str) -> None:
+    removed = False
     with _health_lock:
-        _cooldowns.pop(model, None)
+        removed = _cooldowns.pop(model, None) is not None
+    if removed:
+        _save_health_to_disk()
 
 
 def _remaining(model: str) -> tuple[float, str] | None:
     """Seconds left on this model's cooldown, or None if it is usable."""
+    _sync_health()
     with _health_lock:
         entry = _cooldowns.get(model)
         if entry is None:
@@ -188,23 +288,36 @@ def _remaining(model: str) -> tuple[float, str] | None:
 _prompt_ceilings: dict[str, int] = {}
 
 
-def reset_health() -> None:
+def reset_health(clear_file: bool = True) -> None:
     """Forget every cooldown and learned ceiling. Intended for tests."""
+    global _last_health_mtime
     with _health_lock:
         _cooldowns.clear()
         _prompt_ceilings.clear()
+        _last_health_mtime = None
+    if clear_file:
+        try:
+            import os as _os
+            _os.remove(_health_path())
+        except OSError:
+            pass
 
 
 def _note_ceiling(model: str, requested_tokens: int) -> None:
     if requested_tokens <= 0:
         return
+    changed = False
     with _health_lock:
         previous = _prompt_ceilings.get(model)
         if previous is None or requested_tokens < previous:
             _prompt_ceilings[model] = requested_tokens
+            changed = True
+    if changed:
+        _save_health_to_disk()
 
 
 def _ceiling(model: str) -> int | None:
+    _sync_health()
     with _health_lock:
         return _prompt_ceilings.get(model)
 

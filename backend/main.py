@@ -55,6 +55,43 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+async def health():
+    """Liveness probe for uptime monitors, load balancers and containers."""
+    return {"status": "ok"}
+
+
+@app.get("/api/health")
+async def api_health():
+    """Same probe under /api for clients that prefix everything."""
+    return {"status": "ok"}
+
+
+@app.get("/v1/models")
+async def list_models():
+    """Minimal OpenAI-compatible model list.
+
+    Nothing in this app calls it; external tooling (LLM gateways, monitors)
+    probes /v1/models on any localhost server, which used to spam 404s in the
+    log right after each /health check. Answer with the configured chain.
+    """
+    from backend.research.llm import _models
+
+    seen: list[str] = []
+    for role in ("default", "judge", "synth"):
+        try:
+            chain = _models(role)
+        except Exception:
+            chain = []
+        for name in chain:
+            if name and name not in seen:
+                seen.append(name)
+    return {
+        "object": "list",
+        "data": [{"id": name, "object": "model"} for name in seen],
+    }
+
+
 @app.get("/api/research")
 async def research(q: str, rounds: int = 2, throttle: int = -1):
     # Clamped against the configured ceiling rather than a hard-coded number, so

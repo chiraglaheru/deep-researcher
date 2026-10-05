@@ -436,6 +436,17 @@ STATUS_LABELS = {
 }
 
 
+HEADING_LIMIT = 70
+
+
+def short_heading(text: str, limit: int = HEADING_LIMIT) -> str:
+    """Section headings are cut at 70 characters so the report stays scannable."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip()
+
+
 def status_headline(status: str, missing: list[str]) -> str:
     """A single line the UI and the report both show."""
     if status == "completed":
@@ -528,6 +539,7 @@ def generate_report(question, collector, contradictions,
         here as well: if a section produced nothing and nobody said why, the
         report is still marked partial with a stated reason.
         """
+        heading = short_heading(heading)
         before = len(failed_sections)
         section = _write_section(system, question, heading, instruction, recs, refs,
                                  targets, budget, min_words=words,
@@ -639,9 +651,25 @@ def generate_report(question, collector, contradictions,
         parts.append("\n<!-- pipeline notes: " +
                      "; ".join(str(n) for n in notes).replace("--", "") + " -->")
 
-    markdown = "\n".join(parts).strip() + "\n"
+    markdown = truncate_markdown_headings("\n".join(parts).strip() + "\n")
     return ReportResult(markdown, status, list(failed_sections),
                         list(notes or []))
+
+
+def truncate_markdown_headings(markdown: str, limit: int = HEADING_LIMIT) -> str:
+    """Cut every markdown heading line to 70 chars.
+
+    The model writes its own '## ...' lines, so clamping only the planned
+    headings is not enough: post-process the whole document deterministically.
+    """
+    out: list[str] = []
+    for line in str(markdown or "").split("\n"):
+        match = re.match(r"^(#{1,6}\s+)(.*)$", line)
+        if match and len(match.group(2).strip()) > limit:
+            out.append(match.group(1) + short_heading(match.group(2), limit))
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def write_report(question, collector, contradictions,

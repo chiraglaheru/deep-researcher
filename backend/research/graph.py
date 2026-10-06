@@ -35,8 +35,9 @@ from .llm import CallBudget, ask
 from .markdown_html import render_markdown_html
 from .planner import SOURCES, make_plan
 from .references import candidates, describe
+from .relevance import dimensions as question_dimensions
 from .relevance import diversify, rank, source_context
-from .report import generate_report, status_headline, write_report
+from .report import evidence_holes, generate_report, status_headline, write_report
 from .searcher import search
 from .wiki import fetch_wikipedia
 
@@ -519,6 +520,18 @@ async def gap_check(state):
     prompt = (source_context(state["question"], state.get("plan"))
               + f"\n\nEVIDENCE SO FAR:\n{context}")
 
+    # Under-evidenced dimensions are named explicitly so recovery targets
+    # them instead of accepting "missing evidence" and moving on.
+    plan = state.get("plan") or {}
+    gap_dims = question_dimensions(state["question"])
+    if not gap_dims and plan:
+        gap_dims = [sq.get("question", "") for sq in plan.get("subquestions", [])
+                    if sq.get("question")]
+    holes = evidence_holes(records, gap_dims)
+    if holes:
+        prompt += ("\n\nUNDER-EVIDENCED DIMENSIONS (prioritize follow-up searches "
+                   "that fill exactly these):\n" + "\n".join(f"- {h}" for h in holes))
+
     try:
         gap = await asyncio.to_thread(ask, GAP_SYS, prompt, True)
     except Exception as exc:
@@ -594,6 +607,7 @@ async def synthesizer(state):
         log.error("research FAILED: no usable report could be generated")
 
     return {"report": report, "report_html": report_html,
+              "sections": [(h, m) for h, m in (result.sections or [])],
               "evidence_stats": stats, "export": export,
               "status": completion}
 

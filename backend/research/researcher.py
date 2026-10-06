@@ -13,6 +13,11 @@ from .graph import graph
 from . import config
 
 
+def _section_html(markdown: str) -> str:
+    from .markdown_html import render_markdown_html
+    return render_markdown_html(markdown) if markdown else ""
+
+
 async def deep_research(question: str, max_rounds: int = 3):
     evidence = []
     stats: dict = {}
@@ -87,6 +92,19 @@ async def deep_research(question: str, max_rounds: int = 3):
                 # Emitted as its own event so a client can render the state
                 # before it has the (potentially very large) report body.
                 yield {"type": "status", "data": completion}
+                # Section progress first: if the orchestrator model failed
+                # mid-report and a fallback resumed from the output pool, the
+                # stream still flows in document order instead of stalling
+                # until the full body is ready -- or breaking entirely.
+                for heading, markdown in upd.get("sections") or []:
+                    try:
+                        section_html = _section_html(markdown)
+                    except Exception:
+                        section_html = ""
+                    yield {"type": "report_section",
+                           "heading": heading,
+                           "data": markdown,
+                           "html": section_html}
                 yield {
                     "type": "report",
                     "data": upd["report"],

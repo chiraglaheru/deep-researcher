@@ -540,8 +540,23 @@ def test_status_is_partial_when_a_section_is_missing(monkeypatch):
 
 def test_status_is_completed_when_nothing_is_missing(monkeypatch):
     from backend.research import report as report_module
+    from backend.research.evidence import Evidence
 
-    records = _records()
+    # Completed now means adequate coverage, not just assembled sections: two
+    # adequate findings behind every planned dimension.
+    records = [
+        Evidence(claim=f"performance finding {i}", source_title="P",
+                 source_url=f"https://p.dev/{i}", quality="strong",
+                 dimension="performance", retrieval_status="full",
+                 confidence=0.9)
+        for i in range(2)
+    ] + [
+        Evidence(claim=f"hiring finding {i}", source_title="H",
+                 source_url=f"https://h.dev/{i}", quality="moderate",
+                 dimension="hiring demand", retrieval_status="full",
+                 confidence=0.8)
+        for i in range(2)
+    ]
 
     def all_sections(system, question, heading, instruction, recs, r, t,
                      budget=None, min_words=350, failed=None):
@@ -560,7 +575,34 @@ def test_status_is_completed_when_nothing_is_missing(monkeypatch):
     assert result.status == "completed"
     assert result.missing_sections == []
     assert "PARTIAL" not in result.markdown
+    assert "Evidence hole" not in result.markdown
     assert report_module.status_headline(result.status, []) == "COMPLETE REPORT"
+
+
+def test_status_is_partial_when_a_dimension_lacks_evidence(monkeypatch):
+    """Coverage drives completion: all sections written is not enough."""
+    from backend.research import report as report_module
+
+    records = _records()
+
+    def all_sections(system, question, heading, instruction, recs, r, t,
+                     budget=None, min_words=350, failed=None):
+        return f"## {heading}\n\ntext [1]\n"
+
+    monkeypatch.setattr(report_module, "_write_section", all_sections)
+
+    class Col:
+        def context(self):
+            return ""
+
+    result = report_module.generate_report(
+        "Compare React Native, Flutter and native Android. "
+        "Analyze performance and hiring demand.", Col(), [], records=records)
+
+    assert result.status == "partial", \
+        "thin dimensions must block a completed status"
+    assert any("Evidence hole" in m for m in result.missing_sections)
+    assert "Evidence hole: hiring demand" in result.markdown
 
 
 def test_status_is_failed_when_nothing_can_be_written(monkeypatch):

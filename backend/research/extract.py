@@ -22,7 +22,9 @@ from .chunker import Chunk
 from .evidence import (Evidence, dedupe, from_chunk, normalise_confidence,
                        normalise_quality, quote_is_supported)
 from .llm import LLMChainError, ask
-from .relevance import Scored, dimensions as question_dimensions, targets as question_targets
+from .relevance import (Scored, dimensions as question_dimensions,
+                        target_variant_mismatch)
+from .relevance import targets as question_targets
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +158,18 @@ def extract_evidence(
     records = dedupe(records)
     for index, record in enumerate(records, 1):
         record.evidence_id = f"E{index}"
+
+    # Target fidelity: evidence about a related-but-different variant (another
+    # release, another architecture class) is capped at moderate and labelled,
+    # so synthesis can tell it apart from directly applicable evidence instead
+    # of silently spending strong findings on the wrong target.
+    for record in records:
+        reason = target_variant_mismatch(record.targets, record.claim, tgts)
+        if reason and record.quality == "strong":
+            record.quality = "moderate"
+            record.limitations = ((record.limitations + " " if record.limitations else "")
+                                  + f"applicability: {reason}")
+            log.info("capped %s to moderate: %s", record.evidence_id, reason)
 
     cap = config.max_evidence_records()
     if len(records) > cap:
@@ -315,7 +329,14 @@ def synthesise_sources(
         if budget is not None and not budget.take(1):
             log.info("source synthesis truncated: budget exhausted")
             break
-        group = items[start:start + sources_per_call]
+        # Low-value work is skipped, not paid for: a source whose findings are
+        # all weak or worse contributes no assessable weight, so synthesising
+        # it would spend quota without improving the report.
+        group = [(sid, recs) for sid, recs in items[start:start + sources_per_call]
+                 if any(r.quality in ("strong", "moderate") for r in recs)]
+        if not group:
+            log.info("source synthesis skipped a weak-only group")
+            continue
         payload_parts = []
         for source_id, group_records in group:
             head = group_records[0]

@@ -140,6 +140,59 @@ def _strip_question_wrapper(question: str) -> str:
     return text or question
 
 
+def target_variant_mismatch(record_targets: list[str] | None, claim: str,
+                              question_targets: list[str] | None) -> str | None:
+    """Detect evidence about a related-but-different variant of the target.
+
+    Returns a human-readable reason, or None when the evidence looks directly
+    applicable. Two deterministic rules, both domain-agnostic:
+
+    * version digits: when both sides name digit-bearing variants (7B vs
+      Large 2, 2.5 vs 3) and the sets are disjoint, the evidence is about a
+      different release than the one under investigation;
+    * architecture class: mixture-of-experts evidence for a dense-model
+      question (or the reverse) is background, not a direct finding.
+
+    Generic background without specific variants never mismatches.
+    """
+    if not question_targets:
+        return None
+    rtext = " ".join([*(record_targets or []), claim or ""]).lower()
+    qtext = " ".join(question_targets).lower()
+
+    def version_sig(text: str) -> set[str]:
+        # Years are dates, not versions. Bare numbers are ignored. Tokens
+        # shaped like measurements (12kg, 9.8m/s) are ignored, while version
+        # tokens (7b, 2.5, qwen3) count -- including joined pairs so
+        # "Large 2" and "Large2" produce the same signature.
+        words = re.findall(r"[a-z0-9]+(?:\.[a-z0-9]+)?", text)
+        words = [w for w in words if not re.fullmatch(r"(19|20)\d{2}", w)]
+        sigs: set[str] = set()
+        for word in words:
+            if re.fullmatch(r"\d+[a-z]{2,}", word):
+                continue                            # measurement, e.g. 12kg
+            if re.search(r"\d", word):
+                sigs.add(word)
+        for first, second in zip(words, words[1:]):
+            if re.fullmatch(r"\d{1,2}", second) and re.fullmatch(r"[a-z]+", first):
+                sigs.add(first + second)            # e.g. large + 2
+        return sigs
+
+    rsigs, qsigs = version_sig(rtext), version_sig(qtext)
+    if rsigs and qsigs and rsigs.isdisjoint(qsigs):
+        return ("about a related variant, not the exact target under "
+                "investigation")
+
+    def has_moe(text: str) -> bool:
+        return "moe" in text or "mixture" in text
+
+    if (has_moe(rtext) and "dense" in qtext and not has_moe(qtext)) or \
+       ("dense" in rtext and has_moe(qtext) and "dense" not in qtext):
+        return ("about a different architecture class than the target "
+                "under investigation")
+    return None
+
+
 def rank(chunks: list[Chunk], question: str, plan: dict | None = None,
          top_k: int | None = None) -> list[Scored]:
     """Score every chunk against the question; return the best ones."""
@@ -152,6 +205,10 @@ def rank(chunks: list[Chunk], question: str, plan: dict | None = None,
     dim_terms = {d: set(terms(d)) for d in dims}
     for dim in dim_terms.values():
         query_terms |= dim
+    # Full entity phrases ("acme widget pro") discriminate far better than their
+    # individual words: a song titled "Attention" shares one generic term with
+    # an attention-mechanism question but never the full entity phrase.
+    target_phrases = [t.lower() for t in targets(question) if len(t.split()) > 1]
 
     if not query_terms:
         return [Scored(c, 0.0, ["no query terms"]) for c in chunks]
@@ -190,6 +247,17 @@ def rank(chunks: list[Chunk], question: str, plan: dict | None = None,
                 reasons.append(f"covers dimension '{dim}'")
                 break
 
+        lowered = chunk.content.lower()
+        if any(phrase in lowered for phrase in target_phrases):
+            score *= 1.4
+            reasons.append("names a compared entity")
+
+        if len(overlap) == 1 and len(query_terms) > 3:
+            # One shared generic term ("attention" in a song title) is how
+            # irrelevant results slip in beside technically relevant ones.
+            score *= 0.5
+            reasons.append("matches only one question term")
+
         if _NUMBER.search(chunk.content):
             score *= 1.2
             reasons.append("contains quantitative claims")
@@ -201,6 +269,13 @@ def rank(chunks: list[Chunk], question: str, plan: dict | None = None,
 
         if chunk.retrieval_status == "partial":
             score *= 0.9
+
+        if chunk.retrieval_status == "metadata_only":
+            # A snippet is not a document: rank it below anything actually read
+            # so broader searches convert into usable evidence, not more stubs.
+            score *= 0.55
+        elif chunk.retrieval_status == "full":
+            score *= 1.08
 
         scored.append(Scored(chunk, score, reasons))
 

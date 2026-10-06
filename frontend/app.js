@@ -73,6 +73,8 @@ let currentQuestion = "";
 
 let currentMarkdown = "";
 
+let progressiveHtml = "";
+
 
 // The round ceiling is a server setting, so the options are fetched rather than
 // hardcoded here. Without this the UI silently caps at whatever it shipped with.
@@ -194,14 +196,15 @@ form.addEventListener("submit", async (event) => {
 
     currentQuestion = question;
     currentMarkdown = "";
+    progressiveHtml = "";
 
     errorBox.classList.add("hidden");
     results.classList.remove("hidden");
 
     resetResults();
+    report.classList.add("is-loading");
 
-    button.disabled = true;
-    button.textContent = "Researching...";
+    startResearchButton();
 
     try {
         const rounds = roundsInput ? roundsInput.value : "2";
@@ -266,11 +269,60 @@ form.addEventListener("submit", async (event) => {
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove("hidden");
+        report.classList.remove("is-loading");
     } finally {
-        button.disabled = false;
-        button.textContent = "Start Research →";
+        stopResearchButton();
     }
 });
+
+
+const RESEARCH_MESSAGES = [
+    "Collecting Ideas From The Internet",
+    "Reading Source Documents",
+    "Extracting Evidence",
+    "Checking For Gaps",
+    "Resolving Contradictions",
+    "Writing Your Report",
+];
+
+let researchTimer = null;
+
+
+function startResearchButton() {
+    button.disabled = true;
+    button.classList.add("is-researching");
+    let index = 0;
+    const show = () => {
+        button.innerHTML = "";
+        const msg = document.createElement("span");
+        msg.className = "research-msg";
+        msg.textContent = RESEARCH_MESSAGES[index % RESEARCH_MESSAGES.length];
+        const dots = document.createElement("span");
+        dots.className = "dots";
+        dots.setAttribute("aria-hidden", "true");
+        for (let i = 0; i < 3; i += 1) {
+            const dot = document.createElement("i");
+            dot.textContent = ".";
+            dots.appendChild(dot);
+        }
+        button.appendChild(msg);
+        button.appendChild(dots);
+        index += 1;
+    };
+    show();
+    researchTimer = setInterval(show, 2600);
+}
+
+
+function stopResearchButton() {
+    if (researchTimer) {
+        clearInterval(researchTimer);
+        researchTimer = null;
+    }
+    button.classList.remove("is-researching");
+    button.disabled = false;
+    button.textContent = "Start Research →";
+}
 
 
 function resetResults() {
@@ -281,6 +333,10 @@ function resetResults() {
     report.textContent = "";
     reportWords.textContent = "";
     retrievalStats.textContent = "";
+    retrievalTiles = {};
+    for (const key in retrievalDisplayed) {
+        retrievalDisplayed[key] = 0;
+    }
     retrievalList.textContent = "";
     analysisStats.textContent = "";
     analysisNotes.textContent = "";
@@ -348,6 +404,10 @@ function displayEvent(data, question) {
         renderThrottleStats(data.throttle);
     }
 
+    if (data.type === "report_section") {
+        renderReportSection(data);
+    }
+
     if (data.type === "report") {
         if (data.status) {
             renderStatus(data.status);
@@ -359,6 +419,88 @@ function displayEvent(data, question) {
         behavior: "smooth",
         block: "start"
     });
+}
+
+
+// Flowing retrieval counters: tiles persist across events and tick upward in
+// small random steps toward each new cumulative total, so the dashboard reads
+// as a pipeline in motion rather than jumping between fixed values.
+const retrievalDisplayed = {
+    retrieved: 0,
+    attempted: 0,
+    full: 0,
+    partial: 0,
+    metadata: 0,
+    words: 0,
+    chunks: 0,
+    references: 0,
+};
+
+let retrievalTiles = {};
+
+
+function flowTile(key, label, hint) {
+    let entry = retrievalTiles[key];
+    if (!entry) {
+        const tile = document.createElement("div");
+        tile.className = "stat-tile";
+        const valueEl = document.createElement("strong");
+        valueEl.textContent = "0";
+        const labelEl = document.createElement("span");
+        labelEl.textContent = label;
+        tile.appendChild(valueEl);
+        tile.appendChild(labelEl);
+        if (hint) {
+            const hintEl = document.createElement("small");
+            hintEl.textContent = hint;
+            tile.appendChild(hintEl);
+        }
+        retrievalStats.appendChild(tile);
+        entry = { tile, valueEl, labelEl, timer: null };
+        retrievalTiles[key] = entry;
+    } else {
+        entry.labelEl.textContent = label;
+    }
+    return entry;
+}
+
+
+function flowNumber(key, target, format) {
+    const entry = retrievalTiles[key];
+    if (!entry) {
+        return;
+    }
+    target = Number(target) || 0;
+    if (entry.timer) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+    }
+    const render = (value) => {
+        entry.valueEl.textContent = format ? format(value) : String(value);
+    };
+    const reduce = window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || target <= retrievalDisplayed[key]) {
+        retrievalDisplayed[key] = target;
+        render(target);
+        return;
+    }
+    entry.timer = setInterval(() => {
+        const remaining = target - retrievalDisplayed[key];
+        if (remaining <= 0) {
+            clearInterval(entry.timer);
+            entry.timer = null;
+            render(target);
+            return;
+        }
+        const hop = Math.max(1, Math.round(remaining * (0.04 + Math.random() * 0.12)));
+        retrievalDisplayed[key] += Math.min(hop, remaining);
+        render(retrievalDisplayed[key]);
+        if (retrievalDisplayed[key] >= target) {
+            clearInterval(entry.timer);
+            entry.timer = null;
+        }
+    }, 130);
 }
 
 
@@ -404,32 +546,25 @@ function renderRetrieval(data) {
         + "Figures are cumulative across the whole research run, so they cover "
         + "every round, not just the most recent one.";
 
-    retrievalStats.textContent = "";
-
-    retrievalStats.appendChild(
-        statTile(data.retrieved || 0, `${data.attempted || 0} attempted`,
-            "documents fetched")
-    );
-    retrievalStats.appendChild(
-        statTile(data.full_text || 0, "full text", "readable end to end")
-    );
-    retrievalStats.appendChild(
-        statTile(data.partial || 0, "partial", "paywall, truncation or PDF limits")
-    );
-    retrievalStats.appendChild(
-        statTile(data.metadata_only || 0, "metadata only", "no document text")
-    );
-    retrievalStats.appendChild(
-        statTile(formatNumber(data.words || 0), "words", "retrieved in total")
-    );
-    retrievalStats.appendChild(
-        statTile(data.chunks || 0, "chunks", "section-aware passages")
-    );
+    // Tiles persist across events: each new cumulative total flows upward
+    // from the currently displayed value instead of restarting at zero.
+    flowTile("retrieved", `of ${data.attempted || 0} attempted`, "documents fetched");
+    flowNumber("retrieved", data.retrieved || 0);
+    retrievalDisplayed.attempted = data.attempted || 0;
+    flowTile("full", "full text", "readable end to end");
+    flowNumber("full", data.full_text || 0);
+    flowTile("partial", "partial", "paywall, truncation or PDF limits");
+    flowNumber("partial", data.partial || 0);
+    flowTile("metadata", "metadata only", "no document text");
+    flowNumber("metadata", data.metadata_only || 0);
+    flowTile("words", "words", "retrieved in total");
+    flowNumber("words", data.words || 0, formatNumber);
+    flowTile("chunks", "chunks", "section-aware passages");
+    flowNumber("chunks", data.chunks || 0);
 
     if (data.references_followed) {
-        retrievalStats.appendChild(
-            statTile(data.references_followed, "references", "followed from sources")
-        );
+        flowTile("references", "references", "followed from sources");
+        flowNumber("references", data.references_followed);
     }
 
     const sources = data.sources || [];
@@ -607,13 +742,17 @@ function renderGap(gap) {
     if (gap.sufficient) {
         line.classList.add("is-sufficient");
         line.textContent = "Evidence looks sufficient.";
+    } else if ((gap.missing || "").toLowerCase().includes("round limit")) {
+        line.classList.add("is-complete");
+        line.textContent = "Research complete — round limit reached.";
     } else {
         line.textContent = "Still researching.";
     }
 
     gapBox.appendChild(line);
 
-    if (gap.missing) {
+    if (gap.missing
+        && !(gap.missing || "").toLowerCase().includes("round limit")) {
         const missing = document.createElement("p");
 
         missing.className = "gap-missing";
@@ -753,8 +892,31 @@ function renderStatus(status) {
 }
 
 
+function renderReportSection(data) {
+    // Progressive section from the output pool: appended in document order so
+    // the stream keeps flowing even while a fallback resumes a failed section
+    // server-side. The final "report" event remains authoritative and replaces
+    // this progressive rendering wholesale.
+    let html = data.html || "";
+    if (!html && data.data && window.renderMarkdown) {
+        html = window.renderMarkdown(data.data);
+    }
+    if (!html && data.data) {
+        html = "";
+    }
+    if (html) {
+        progressiveHtml += (progressiveHtml ? "\n" : "") + html;
+        report.classList.remove("is-loading");
+        report.innerHTML = progressiveHtml;
+        wireCitationTooltips();
+    }
+}
+
+
 function renderReport(data) {
     currentMarkdown = data.data || "";
+    progressiveHtml = "";
+    report.classList.remove("is-loading");
 
     // Server pre-compiles markdown to HTML to avoid freezing the UI on
     // 15k-word reports. The client renderer is only a fallback for old payloads.

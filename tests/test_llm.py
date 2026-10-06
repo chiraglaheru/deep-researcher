@@ -587,3 +587,80 @@ def test_advance_notice_names_the_fallback_and_its_position():
     notice = llm._advance_notice("groq/a", 0, 3, chain, "rate limited")
     assert notice == "groq/a -> rate limited -> trying fallback 2/3: groq/b"
     assert "no fallback models left" in llm._advance_notice("groq/c", 2, 3, chain, "x")
+
+
+# --- chain-level retry after temporary rate limits ---------------------------
+#
+# When every model in the chain failed only with temporary quotas, one bounded
+# wait plus a single second pass beats collapsing the whole research stage.
+# Anything else (auth, oversized prompts) still fails fast.
+
+
+def test_all_temp_failures_earn_one_bounded_retry(world, monkeypatch):
+    clock, slept = world
+    monkeypatch.setenv("LLM_CHAIN_RETRY_WAIT_S", "90")
+    calls = {"n": 0}
+
+    def fake_completion(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _rate_limited(GROQ_TPM)
+        return FakeResponse("recovered on second pass")
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user") == "recovered on second pass"
+
+    assert calls["n"] == 3, "two failures, one wait, one successful retry"
+    assert 60 in slept, "the per-minute park must be waited out exactly once"
+
+
+def test_auth_failure_fails_fast_without_chain_retry(world, monkeypatch):
+    clock, slept = world
+    monkeypatch.setenv("LLM_CHAIN_RETRY_WAIT_S", "900")
+
+    def fake_completion(**kwargs):
+        if kwargs["model"] == "gemini/gemini-3.6-flash":
+            raise _unauthorized()
+        raise _rate_limited(GROQ_TPM)
+
+    _chain("gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash")
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user")
+
+    assert slept == [], "a hard rejection must never trigger the retry wait"
+
+
+def test_retry_cap_exceeded_raises_instead_of_waiting(world, monkeypatch):
+    clock, slept = world
+    monkeypatch.setenv("LLM_CHAIN_RETRY_WAIT_S", "5")
+
+    def fake_completion(**kwargs):
+        raise _rate_limited(GROQ_TPM)
+
+    _chain("groq/openai/gpt-oss-120b", "openrouter/google/gemma-3-27b-it")
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user")
+
+    assert slept == [], "a wait past the cap must not be paid"
+
+
+def test_auth_failure_parks_nothing(world):
+    clock, _ = world
+
+    def fake_completion(**kwargs):
+        raise _unauthorized()
+
+    _chain("gemini/gemini-3.6-flash")
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user")
+
+    assert llm._remaining("gemini/gemini-3.6-flash") is None, \
+        "a config error must not consume cooldown state"

@@ -365,7 +365,7 @@ textarea::-webkit-scrollbar-thumb:hover {
 .info {
     position: relative;
     display: none;
-    margin-left: auto;
+    margin-left: 0.35rem;
 }
 
 .info.has-tip {
@@ -583,6 +583,14 @@ button:disabled {
     text-transform: uppercase;
 }
 
+:root[data-theme="light"] .plan-source {
+    border-color: #e3ddd0;
+
+    background: #efe9dc;
+
+    color: #6b6259;
+}
+
 
 /* Progress */
 
@@ -603,6 +611,10 @@ button:disabled {
 }
 
 .gap-line.is-sufficient {
+    color: #8fbf8f;
+}
+
+.gap-line.is-complete {
     color: #8fbf8f;
 }
 
@@ -694,6 +706,112 @@ button:disabled {
 
 .report-card {
     margin-top: 30px;
+}
+
+/* Sweeping shimmer while the report streams in. */
+.report.is-loading {
+    position: relative;
+    min-height: 180px;
+    overflow: hidden;
+}
+
+.report.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        100deg,
+        transparent 20%,
+        rgba(255, 255, 255, 0.09) 50%,
+        transparent 80%
+    );
+    animation: report-sweep 1.4s linear infinite;
+    pointer-events: none;
+}
+
+:root[data-theme="light"] .report.is-loading::after {
+    background: linear-gradient(
+        100deg,
+        transparent 20%,
+        rgba(120, 100, 70, 0.12) 50%,
+        transparent 80%
+    );
+}
+
+@keyframes report-sweep {
+    from {
+        transform: translateX(-100%);
+    }
+    to {
+        transform: translateX(100%);
+    }
+}
+
+/* Researching button: rotating status + sequential dots + sweep. */
+#research-button {
+    position: relative;
+    overflow: hidden;
+}
+
+#research-button.is-researching::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        100deg,
+        transparent 30%,
+        rgba(255, 255, 255, 0.35) 50%,
+        transparent 70%
+    );
+    animation: button-sweep 1.6s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes button-sweep {
+    from {
+        transform: translateX(-100%);
+    }
+    to {
+        transform: translateX(100%);
+    }
+}
+
+.research-msg {
+    margin-right: 0.15em;
+}
+
+.dots i {
+    font-style: normal;
+    opacity: 0;
+    animation: dot-blink 1.5s infinite;
+}
+
+.dots i:nth-child(2) {
+    animation-delay: 0.3s;
+}
+
+.dots i:nth-child(3) {
+    animation-delay: 0.6s;
+}
+
+@keyframes dot-blink {
+    0%, 60%, 100% {
+        opacity: 0;
+    }
+    30% {
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .report.is-loading::after,
+    #research-button.is-researching::after,
+    .dots i {
+        animation: none;
+    }
+    .dots i {
+        opacity: 1;
+    }
 }
 
 .report-label {

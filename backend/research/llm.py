@@ -122,6 +122,16 @@ def max_attempts() -> int:
     return max(1, int(_env_float("LLM_MAX_ATTEMPTS", MAX_ATTEMPTS)))
 
 
+def chain_retry_wait_s() -> float:
+    """Longest to wait before giving the whole chain one second pass.
+
+    When every model failed only with temporary rate limits, one bounded wait
+    for the soonest recovery beats collapsing the entire research stage. Hard
+    failures (auth, oversized prompts) never trigger a retry.
+    """
+    return _env_float("LLM_CHAIN_RETRY_WAIT_S", 30.0)
+
+
 def daily_cooldown_s() -> float:
     return _env_float("LLM_DAILY_COOLDOWN_S", 3600.0)
 
@@ -632,6 +642,27 @@ def _pacer():
     return get("llm")
 
 
+def _chain_retry_delay(chain: list[str], approx_tokens: int) -> float | None:
+    """Seconds until the soonest cooling model recovers, or None to give up.
+
+    Returns None when retrying is futile: a model with a learned oversized
+    ceiling would reject the same prompt again, and an empty chain has
+    nothing to retry with.
+    """
+    if not chain:
+        return None
+    soonest: float | None = None
+    for model in chain:
+        if _exceeds_ceiling(model, approx_tokens):
+            return None
+        remaining = _remaining(model)
+        if remaining is None:
+            return 0.0
+        left, _ = remaining
+        soonest = left if soonest is None else min(soonest, left)
+    return soonest if soonest is not None else 0.0
+
+
 def _advance_notice(model: str, index: int, total: int,
                     chain: list[str], reason: str) -> str:
     position = index + 1
@@ -641,7 +672,8 @@ def _advance_notice(model: str, index: int, total: int,
     return f"{model} -> {reason} -> no fallback models left in the chain"
 
 
-def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
+def ask(system: str, user: str, json_mode: bool = False, role: str = "default",
+        _retried: bool = False):
     if _mock_enabled():
         return _mock(_mock_kind(system, role), user, json_mode)
 
@@ -650,6 +682,11 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
     chain, skipped = _chain_for_call(role, approx)
     attempts = max_attempts()
     last: BaseException | None = None
+    # How each model in this pass failed. Only a pass where EVERY failure was
+    # a temporary rate limit earns one more pass after a bounded wait; auth
+    # rejections, oversized prompts and programming errors fail fast instead
+    # of burning quota on a doomed retry.
+    fail_kinds: list[str] = []
 
     if skipped:
         log.debug("model chain for role %s: %d available, %d skipped",
@@ -687,10 +724,13 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
                     requested = oversized_request_size(str(exc))
                     _note_ceiling(model, requested or approx)
                     seconds, reason = oversized_cooldown_s(), "request too large"
+                    fail_kinds.append("hard")
                 elif kind == "daily":
                     seconds, reason = daily_cooldown_s(), "per-day quota"
+                    fail_kinds.append("temp")
                 else:
                     seconds, reason = (delay or per_minute_cooldown_s()), "per-minute quota"
+                    fail_kinds.append("temp")
 
                 _cool_down(model, seconds, reason)
                 notice = _advance_notice(model, index, total, chain,
@@ -718,14 +758,29 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default"):
                                              "overloaded after all attempts")
                     log.warning("llm %s | %s | cooling down %.0fs",
                                 model, notice, overload_cooldown_s())
+                    fail_kinds.append("temp")
                 else:
                     notice = _advance_notice(model, index, total, chain,
                                              f"rejected: {type(exc).__name__}")
                     log.warning("llm %s | attempt %d/%d | %s", model, attempt,
                                 attempts, notice)
+                    fail_kinds.append("hard")
                 break
 
             # Non-provider exceptions (TypeError, KeyError, ...) propagate on purpose.
+
+    if (not _retried and fail_kinds
+            and all(kind == "temp" for kind in fail_kinds)):
+        delay = _chain_retry_delay(chain, approx)
+        cap = chain_retry_wait_s()
+        if delay is not None and delay <= cap:
+            log.warning("llm chain exhausted by temporary rate limits; "
+                        "waiting %.0fs for recovery, then one final pass", delay)
+            sleep(delay)
+            return ask(system, user, json_mode, role, _retried=True)
+        log.warning("llm chain exhausted by temporary rate limits; soonest "
+                    "recovery in %s (cap %.0fs): failing instead of waiting",
+                    f"{delay:.0f}s" if delay is not None else "unknown", cap)
 
     detail = "; ".join(f"{m} ({r})" for m, r in skipped) or "none"
     attempted = ", ".join(chain)

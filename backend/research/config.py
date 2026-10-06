@@ -113,6 +113,24 @@ def results_per_search() -> int:
     return _int("RESEARCH_RESULTS_PER_SEARCH", 6, 1, 20)
 
 
+def search_blocked_hosts() -> tuple[str, ...]:
+    """Hosts never kept from web/news results, comma-separated in env.
+
+    Social and video pages are unreadable to the fetcher (JS walls, login
+    walls) and contribute nothing but snippet noise, so they are dropped at
+    the search layer before spending fetch budget on them. Scholar and GitHub
+    are untouched: their hosts are publishers and repos, not noise. Wikipedia
+    is deliberately kept: it feeds the pre-LLM baseline.
+    """
+    raw = os.environ.get(
+        "SEARCH_BLOCKED_HOSTS",
+        "twitter.com,x.com,facebook.com,instagram.com,tiktok.com,"
+        "youtube.com,pinterest.com",
+    )
+    return tuple(h.strip().lower().removeprefix("www.")
+                 for h in raw.split(",") if h.strip())
+
+
 def rounds_ceiling() -> int:
     """Hard upper bound on research depth, shared by the API and the UI."""
     return _int("RESEARCH_MAX_ROUNDS_LIMIT", 10, 1, 50)
@@ -186,12 +204,12 @@ def relevance_min_score() -> float:
 
 def extract_batch_chars() -> int:
     """Chars of chunk text per extraction call. Drives evidence per LLM call."""
-    return _int("EXTRACT_BATCH_CHARS", 13_000, 1_000, 200_000)
+    return _int("EXTRACT_BATCH_CHARS", 6_000, 1_000, 200_000)
 
 
 def extract_max_batches() -> int:
     """Hard ceiling on extraction calls, whatever the evidence volume."""
-    return _int("EXTRACT_MAX_BATCHES", 14, 1, 200)
+    return _int("EXTRACT_MAX_BATCHES", 20, 1, 200)
 
 
 def max_evidence_records() -> int:
@@ -242,13 +260,33 @@ def report_max_sections() -> int:
 
 
 def report_evidence_per_section() -> int:
-    """Evidence records handed to each section writer."""
-    return _int("REPORT_EVIDENCE_PER_SECTION", 60, 4, 500)
+    """Evidence records handed to each section writer.
+
+    Kept selective on purpose: the top-ranked records carry the section, and
+    a smaller prompt stays clear of provider token limits while forcing the
+    writer to cite the strongest findings instead of padding count.
+    """
+    return _int("REPORT_EVIDENCE_PER_SECTION", 40, 4, 500)
 
 
 def report_quality_floor() -> float:
     """Sections scoring below this on evidence support are not written."""
     return _float("REPORT_QUALITY_FLOOR", 0.0, 0.0, 1.0)
+
+
+def output_pool_resume() -> bool:
+    """Retry model-failed sections once with pool context before giving up.
+
+    The retry reads the post-processed sections already in the pool so the
+    fallback continues the report instead of restarting it. Completed pool
+    entries are never modified by the retry.
+    """
+    return _bool("OUTPUT_POOL_RESUME", True)
+
+
+def output_pool_context_chars() -> int:
+    """Max chars of completed-section digest handed to a fallback retry."""
+    return _int("OUTPUT_POOL_CONTEXT_CHARS", 4000, 0, 60_000)
 
 
 # --- export ----------------------------------------------------------------
@@ -302,12 +340,13 @@ def export_enabled() -> bool:
 
 # --- global budgets (Sec 36: no uncontrolled crawling) ---------------------
 
-# Measured on a representative run: extraction is ~8 batches plus ~5 per-source
-# synthesis calls, so each extra round costs roughly this many model calls, on
-# top of a fixed plan + contradiction + report cost. Used only to size a default
-# budget; an explicit RESEARCH_LLM_BUDGET always wins.
+# Measured at 6k-char extraction batches on a representative run: a full
+# round packs ~16 batches plus ~5 per-source synthesis calls, so each extra
+# round costs roughly this many model calls, on top of a fixed plan +
+# contradiction + report cost. Used only to size a default budget; an explicit
+# RESEARCH_LLM_BUDGET always wins.
 LLM_FIXED_CALL_ESTIMATE = 17
-LLM_CALLS_PER_ROUND_ESTIMATE = 13
+LLM_CALLS_PER_ROUND_ESTIMATE = 18
 
 
 def budget_estimate(rounds: int) -> int:

@@ -52,6 +52,35 @@ def _item(title, url, snippet, date, kind, query):
     return {"title": title or "", "url": url, "snippet": snippet or "", "date": date, "type": kind, "query": query}
 
 
+def _blocked_host(url: str, blocked: tuple[str, ...]) -> bool:
+    """True when this URL lives on a noise host (social/video pages)."""
+    from urllib.parse import urlparse
+    host = urlparse(url or "").netloc.lower().removeprefix("www.")
+    return bool(host) and any(bad in host for bad in blocked)
+
+
+def _drop_blocked(rows: list[dict], source: str) -> list[dict]:
+    """Strip social/video noise from web/news results before they cost budget.
+
+    Scholar and GitHub are exempt: their hosts are the signal. Filtering runs
+    on normalized items (after the disk cache), so changing the blocklist
+    never requires invalidating cached SerpApi responses.
+    """
+    if source not in ("web", "news") or not rows:
+        return rows
+    from . import config as _config
+    blocked = _config.search_blocked_hosts()
+    if not blocked:
+        return rows
+    kept = [r for r in rows if not _blocked_host(r.get("url", ""), blocked)]
+    dropped = len(rows) - len(kept)
+    if dropped:
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "search filtered %d %s result(s) on blocked hosts", dropped, source)
+    return kept
+
+
 _SEARCH_MOCK_WARNED = False
 
 
@@ -139,12 +168,12 @@ def search(source: str, query: str, n: int = 6) -> list[dict]:
 def _search_uncapped(source: str, query: str, n: int = 6) -> list[dict]:
     if source == "news":
         rows = _cached_run(source, query, n, {"engine": "google_news", "q": query}).get("news_results", [])[:n]
-        return [_item(x.get("title"), x.get("link"), x.get("snippet"),
-                      x.get("iso_date") or x.get("date"), "news", query) for x in rows]
+        return _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"),
+                      x.get("iso_date") or x.get("date"), "news", query) for x in rows], source)
     if source == "scholar":
         rows = _cached_run(source, query, n, {"engine": "google_scholar", "q": query}).get("organic_results", [])[:n]
         return [_item(x.get("title"), x.get("link"), x.get("snippet"),
                       (x.get("publication_info") or {}).get("summary"), "scholar", query) for x in rows]
     q = f"site:github.com {query}" if source == "github" else query
     rows = _cached_run(source, query, n, {"engine": "google", "q": q}).get("organic_results", [])[:n]
-    return [_item(x.get("title"), x.get("link"), x.get("snippet"), x.get("date"), source, query) for x in rows]
+    return _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"), x.get("date"), source, query) for x in rows], source)

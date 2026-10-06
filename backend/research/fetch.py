@@ -305,8 +305,17 @@ class Fetcher:
                 doc.status, doc.limitation = METADATA, "PDF contains no extractable text (likely scanned)"
             return doc
         except Exception as exc:
-            doc.status, doc.method = FAILED, "pdf"
-            doc.limitation = f"PDF parse failed: {type(exc).__name__}"
+            # A truncated download is missing its trailer, which pypdf reports
+            # as "EOF marker not found". That is a cut-off file in transit, not
+            # a JSON/parse bug elsewhere: say so plainly instead of leaking the
+            # raw parser error into the limitation.
+            if "eof" in str(exc).lower():
+                doc.status, doc.method = FAILED, "pdf"
+                doc.limitation = ("PDF truncated mid-download (trailer/EOF marker "
+                                  "missing); nothing could be parsed")
+            else:
+                doc.status, doc.method = FAILED, "pdf"
+                doc.limitation = f"PDF parse failed: {type(exc).__name__}"
             return doc
 
     # -- arxiv -------------------------------------------------------------

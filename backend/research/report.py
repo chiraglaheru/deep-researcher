@@ -24,7 +24,9 @@ import re
 from . import config
 from .evidence import (Evidence, QUALITY_ORDER, source_type_label, statistics)
 from .llm import LLMChainError, ask
+from .output_pool import OutputMemoryPool
 from .relevance import dimensions as question_dimensions
+from .relevance import target_variant_mismatch
 from .relevance import targets as question_targets
 
 log = logging.getLogger(__name__)
@@ -282,6 +284,10 @@ def _select_for_dimension(records: list[Evidence], dimension: str,
         if targets and record.targets:
             overlap = {t.lower() for t in record.targets} & {t.lower() for t in targets}
             score += 0.8 * len(overlap)
+        if targets and target_variant_mismatch(record.targets, record.claim, targets):
+            # Related-variant evidence ranks below directly applicable evidence
+            # for the same dimension instead of competing with it equally.
+            score -= 1.5
         claim_words = set(re.findall(r"[a-z]+", (record.claim + " " + record.detail).lower()))
         score += 0.6 * len(words & claim_words)
         score += (len(QUALITY_ORDER) - record.rank) * 0.15
@@ -396,17 +402,23 @@ class ReportResult:
     ``completed``  every planned section was written
     ``partial``    some planned sections are missing; ``missing_sections`` says which
     ``failed``     no usable report could be produced
+
+    ``sections`` holds the finished (heading, markdown) pairs in document
+    order, mirroring the per-run output pool, so the stream can emit progress
+    without re-reading the assembled document.
     """
 
-    __slots__ = ("markdown", "status", "missing_sections", "notes")
+    __slots__ = ("markdown", "status", "missing_sections", "notes", "sections")
 
     def __init__(self, markdown: str, status: str,
                  missing_sections: list[str] | None = None,
-                 notes: list[str] | None = None):
+                 notes: list[str] | None = None,
+                 sections: list[tuple[str, str]] | None = None):
         self.markdown = markdown
         self.status = status
         self.missing_sections = missing_sections or []
         self.notes = notes or []
+        self.sections = sections or []
 
     def __bool__(self) -> bool:
         return self.status != "failed"
@@ -436,15 +448,38 @@ STATUS_LABELS = {
 }
 
 
-HEADING_LIMIT = 70
+def _dim_hit(record, dimension: str) -> bool:
+    """Whether this record actually evidences the dimension (not just mentions)."""
+    tag = (record.dimension or "").lower().strip()
+    name = dimension.lower().strip()
+    if tag and tag == name:
+        return True
+    words = {w.lower() for w in re.findall(r"[a-z]+", name) if len(w) > 3}
+    if not words:
+        return False
+    if tag and words & {w.lower() for w in re.findall(r"[a-z]+", tag)}:
+        return True
+    claim_words = set(re.findall(r"[a-z]+", (record.claim + " " + record.detail).lower()))
+    return bool(words & claim_words)
 
 
-def short_heading(text: str, limit: int = HEADING_LIMIT) -> str:
-    """Section headings are cut at 70 characters so the report stays scannable."""
-    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
-    if len(cleaned) <= limit:
-        return cleaned
-    return cleaned[:limit].rstrip()
+def evidence_holes(records, dims: list[str], needed: int | None = None) -> list[str]:
+    """Dimensions without enough adequate evidence to support a section.
+
+    A dimension counts as covered only with ``needed`` strong/moderate
+    findings behind it (2 for deep reports, 1 for brief). Mentioning a
+    dimension is not covering it. Returned strings are ready for status
+    lists and gap-check prompts alike.
+    """
+    need = needed if needed is not None else (1 if config.report_depth() == "brief" else 2)
+    holes = []
+    for dim in dims or []:
+        count = sum(1 for r in records or []
+                    if r.quality in ("strong", "moderate") and _dim_hit(r, dim))
+        if count < need:
+            holes.append(f"Evidence hole: {dim} "
+                         f"(only {count} adequate finding(s), need {need})")
+    return holes
 
 
 def status_headline(status: str, missing: list[str]) -> str:
@@ -510,7 +545,7 @@ def generate_report(question, collector, contradictions,
     today = datetime.date.today().isoformat()
     dims = question_dimensions(question)
     if not dims and plan:
-        dims = [sq.get("question", "")[:70]
+        dims = [sq.get("question", "")
                 for sq in plan.get("subquestions", []) if sq.get("question")]
     targets = question_targets(question)
     stats = statistics(records)
@@ -532,49 +567,105 @@ def generate_report(question, collector, contradictions,
     cap = config.report_max_sections() if is_deep else 4
     dims = dims[:cap]
 
-    def compose(system, heading, instruction, recs, words):
+    # Coverage holes are computed from the final evidence set: a dimension
+    # mentioned in the report must have adequate findings behind it, or the
+    # gap is named explicitly instead of polished over.
+    holes = evidence_holes(records, dims)
+
+    # Per-run output memory pool: every finished section is stored verbatim
+    # as it completes. A fallback retrying a failed section reads this pool
+    # (read-only copies) so it continues the report instead of restarting it,
+    # and completed entries are never modified by a retry.
+    pool = OutputMemoryPool(question)
+    # Specs of sections whose model call failed and may be resumed from pool.
+    pending_resume: dict[str, tuple] = {}
+
+    def _pool_grounding(exclude: str = "") -> str:
+        digest = pool.context(config.output_pool_context_chars(), exclude=exclude)
+        if not digest:
+            return ""
+        return ("\n\nSECTIONS ALREADY WRITTEN (read-only context: do not restate, "
+                "rewrite or alter them; write only the requested section so it "
+                "continues the report):\n" + digest)
+
+    def compose(system, heading, instruction, recs, words, ground: bool = False):
         """Write one section and guarantee the missing-section list stays honest.
 
         The writer records its own failure reason, but the invariant is enforced
         here as well: if a section produced nothing and nobody said why, the
         report is still marked partial with a stated reason.
+
+        Successful sections are stored verbatim in the output pool; model
+        failures are stashed for a single pool-grounded resume pass.
+
+        Section headings pass through unaltered: no length gate is applied,
+        so full technical headings reach the document canvas intact.
         """
-        heading = short_heading(heading)
+        if ground:
+            instruction = instruction + _pool_grounding(exclude=heading)
         before = len(failed_sections)
         section = _write_section(system, question, heading, instruction, recs, refs,
                                  targets, budget, min_words=words,
                                  failed=failed_sections)
         if section:
+            pool.complete(heading, section)
             return section
         if len(failed_sections) == before:
             failed_sections.append(f"{heading} (section produced no output)")
+        reason = failed_sections[-1] if failed_sections else ""
+        if _resumable_failure(reason):
+            pending_resume.setdefault(heading, (system, instruction, recs, words))
+            pool.fail(heading, reason)
         return ""
 
-    body_sections: list[str] = []
+    def resume_from_pool() -> None:
+        """Retry model-failed sections once, grounded in completed output.
 
+        Each retry reads post-processed sections from the pool but cannot alter
+        them: pool entries are immutable and the retry only writes its own
+        missing section. Deterministic failures (no evidence, spent budget)
+        are not retried.
+        """
+        if not pending_resume or not config.output_pool_resume():
+            return
+        for heading, (system, instruction, recs, words) in list(pending_resume.items()):
+            if heading in pool.snapshot():
+                continue
+            if budget is not None and not budget.available():
+                break
+            retry_instruction = instruction + _pool_grounding(exclude=heading)
+            before = len(failed_sections)
+            tmp_failed: list[str] = []
+            section = _write_section(system, question, heading, retry_instruction,
+                                     recs, refs, targets, budget,
+                                     min_words=words, failed=tmp_failed)
+            if section:
+                pool.complete(heading, section)
+                # Drop the original failure: the section now exists verbatim.
+                failed_sections[:] = [f for f in failed_sections
+                                      if not f.startswith(heading + " (")]
+            elif tmp_failed and before == len(failed_sections):
+                # Keep the original reason; the retry failing too adds no
+                # new information, only a duplicate entry.
+                pass
+            del pending_resume[heading]
+
+    body_specs: list[tuple] = []
     for dimension in dims:
         relevant = _select_for_dimension(records, dimension, targets)
         if not relevant:
             continue
-        planned += 1
         guidance = _DIMENSION_GUIDANCE.get(dimension.lower().strip(),
                                             _FALLBACK_GUIDANCE)
-        section = compose(DIMENSION_SYSTEM, dimension.title(), guidance, relevant,
-                          700 if is_deep else 300)
-        if section:
-            written += 1
-            body_sections.append(section)
+        body_specs.append((DIMENSION_SYSTEM, dimension.title(),
+                            guidance, relevant, 700 if is_deep else 300))
 
     if contradictions:
-        planned += 1
-        section = compose(
-            CONFLICT_SYSTEM, "Where the Evidence Conflicts",
-            "Reconcile the disagreements recorded below.",
-            _select_for_dimension(records, "conflicting evidence", targets) or records,
-            500 if is_deep else 250)
-        if section:
-            written += 1
-            body_sections.append(section)
+        body_specs.append(
+            (CONFLICT_SYSTEM, "Where the Evidence Conflicts",
+             "Reconcile the disagreements recorded below.",
+             _select_for_dimension(records, "conflicting evidence", targets) or records,
+             500 if is_deep else 250))
 
     if is_deep:
         for heading, system, instruction, words in (
@@ -583,45 +674,56 @@ def generate_report(question, collector, contradictions,
             ("Decision Framework", DECISION_SYSTEM,
              "Give the reader conditional guidance for choosing.", 500),
         ):
-            planned += 1
-            section = compose(system, heading, instruction, records, words)
-            if section:
-                written += 1
-                body_sections.append(section)
+            body_specs.append((system, heading, instruction, records, words))
 
-    planned += 1
-    quality_section = compose(
-        QUALITY_SYSTEM, "Evidence Quality and Limitations",
-        "Assess the evidence base and its weaknesses.",
-        records, 400 if is_deep else 200)
-    if quality_section:
-        written += 1
-    body_sections.append(quality_section)
-
-    planned += 1
-    methodology = compose(
-        METHOD_SYSTEM, "Scope and Methodology",
-        "Describe what was investigated and what this method cannot establish.",
-        records, 350 if is_deep else 200)
-    if methodology:
-        written += 1
+    quality_instruction = "Assess the evidence base and its weaknesses."
+    if holes:
+        # The limitations section must name each hole plainly: an unresolved
+        # gap stated in the report is a finding, not a failure.
+        quality_instruction += ("\n\nUNRESOLVED EVIDENCE GAPS this run could not "
+                                "close (state each as unresolved; do not write "
+                                "around them):\n" + "\n".join(f"- {h}" for h in holes))
+    body_specs.append(
+        (QUALITY_SYSTEM, "Evidence Quality and Limitations",
+         quality_instruction,
+         records, 400 if is_deep else 200))
 
     summary_pool = records if len(records) <= 40 else _select_for_dimension(records, "", targets)
-    planned += 1
-    executive = compose(
-        EXEC_SYSTEM, "Executive Summary",
-        "Summarise the findings the detailed sections establish.",
-        summary_pool, 450 if is_deep else 250)
-    if executive:
-        written += 1
+    tail_specs: list[tuple] = [
+        (METHOD_SYSTEM, "Scope and Methodology",
+         "Describe what was investigated and what this method cannot establish.",
+         records, 350 if is_deep else 200),
+        (EXEC_SYSTEM, "Executive Summary",
+         "Summarise the findings the detailed sections establish.",
+         summary_pool, 450 if is_deep else 250),
+        (CONCLUSION_SYSTEM, "Conclusion",
+         "Give the balanced synthesis and name what would change the answer.",
+         records, 400 if is_deep else 250),
+    ]
 
-    planned += 1
-    conclusion = compose(
-        CONCLUSION_SYSTEM, "Conclusion",
-        "Give the balanced synthesis and name what would change the answer.",
-        records, 400 if is_deep else 250)
-    if conclusion:
-        written += 1
+    planned = len(body_specs) + len(tail_specs)
+    written = 0
+    # First pass in planned order; the pool accumulates verbatim sections.
+    for spec in body_specs + tail_specs:
+        # Summarising sections are grounded in finished output, not just raw
+        # evidence, so a mid-report failure cannot silently change what they say.
+        ground = spec[1] in ("Executive Summary", "Conclusion", "Scope and Methodology")
+        if compose(*spec, ground=ground):
+            written += 1
+
+    # Second pass: fallbacks resume only the model-failed sections, reading
+    # the pool but never altering completed data.
+    resume_from_pool()
+    done = pool.snapshot()
+    written = sum(1 for spec in body_specs + tail_specs if spec[1] in done)
+
+    ordered = [s for s in tail_specs[1:2]] + [tail_specs[0]] + body_specs + [tail_specs[2]]
+    body_sections = [done[spec[1]] for spec in body_specs if spec[1] in done]
+    methodology = done.get("Scope and Methodology", "")
+    executive = done.get("Executive Summary", "")
+    conclusion = done.get("Conclusion", "")
+    sections: list[tuple[str, str]] = [(spec[1], done[spec[1]])
+                                       for spec in ordered if spec[1] in done]
 
     if executive:
         parts.append(executive)
@@ -639,11 +741,15 @@ def generate_report(question, collector, contradictions,
         parts.append(evidence_table)
         parts.append("")
 
-    status = classify_status("x", failed_sections, planned, written)
-    if failed_sections:
+    # Completion reflects evidence adequacy, not just section assembly: named
+    # holes join the missing list so the run reports partial until coverage
+    # exists, and the banner exposes each gap instead of hiding it.
+    missing = list(failed_sections) + [h for h in holes if h not in failed_sections]
+    status = classify_status("x", missing, planned, written)
+    if missing:
         # Never silently present a section-less report as a finished one, in the
         # UI or in the exported file.
-        parts.append(partial_banner(status, failed_sections))
+        parts.append(partial_banner(status, missing))
 
     parts.append(render_references(records, refs))
 
@@ -651,25 +757,24 @@ def generate_report(question, collector, contradictions,
         parts.append("\n<!-- pipeline notes: " +
                      "; ".join(str(n) for n in notes).replace("--", "") + " -->")
 
-    markdown = truncate_markdown_headings("\n".join(parts).strip() + "\n")
-    return ReportResult(markdown, status, list(failed_sections),
-                        list(notes or []))
+    markdown = "\n".join(parts).strip() + "\n"
+    return ReportResult(markdown, status, missing,
+                        list(notes or []), sections=sections)
 
 
-def truncate_markdown_headings(markdown: str, limit: int = HEADING_LIMIT) -> str:
-    """Cut every markdown heading line to 70 chars.
+def _resumable_failure(reason: str) -> bool:
+    """Only transient model failures deserve a pool-grounded resume.
 
-    The model writes its own '## ...' lines, so clamping only the planned
-    headings is not enough: post-process the whole document deterministically.
+    Missing evidence and an exhausted budget are deterministic: retrying them
+    reproduces the same outcome while burning calls. A failed model call may
+    succeed on a fallback that can read the pool.
     """
-    out: list[str] = []
-    for line in str(markdown or "").split("\n"):
-        match = re.match(r"^(#{1,6}\s+)(.*)$", line)
-        if match and len(match.group(2).strip()) > limit:
-            out.append(match.group(1) + short_heading(match.group(2), limit))
-        else:
-            out.append(line)
-    return "\n".join(out)
+    text = str(reason or "")
+    if "budget" in text:
+        return False
+    if "no evidence was selected" in text or "no usable evidence" in text:
+        return False
+    return True
 
 
 def write_report(question, collector, contradictions,

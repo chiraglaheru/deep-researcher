@@ -56,41 +56,108 @@ def _search_titles(query: str, limit: int = 5) -> list[str]:
 
 def _fetch_extracts(titles: list[str], chars: int = 6000) -> list[WikiDoc]:
     import requests
+    from bs4 import BeautifulSoup
 
     if not titles:
         return []
+
+    out: list[WikiDoc] = []
+
+    skip_sections = {
+        "references",
+        "notes",
+        "citations",
+        "bibliography",
+        "sources",
+        "external links",
+        "further reading",
+        "see also",
+        "works cited",
+    }
+
     try:
-        resp = requests.get(
-            API,
-            params={
-                "action": "query",
-                "prop": "extracts",
-                "exintro": 0,
-                "explaintext": 1,
-                "exsectionformat": "plain",
-                "exchars": chars,
-                "titles": "|".join(titles),
-                "redirects": 1,
-                "format": "json",
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=12,
-        )
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        pages = ((data.get("query") or {}).get("pages") or {}).values()
-        out: list[WikiDoc] = []
-        for page in pages:
-            title = page.get("title", "")
-            extract = (page.get("extract") or "").strip()
-            pageid = page.get("pageid", "")
-            if not title or not extract or "missing" in page:
+        for title in titles:
+            resp = requests.get(
+                API,
+                params={
+                    "action": "parse",
+                    "page": title,
+                    "prop": "text",
+                    "redirects": 1,
+                    "format": "json",
+                    "formatversion": 2,
+                },
+                headers={"User-Agent": USER_AGENT},
+                timeout=12,
+            )
+
+            if resp.status_code != 200:
                 continue
+
+            data = resp.json()
+            page = (data.get("parse") or {})
+            html = page.get("text") or ""
+            if isinstance(html, dict):
+                html = html.get("*") or ""
+            html = html.strip()
+
+            if not html:
+                continue
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Remove Wikipedia junk that is not article content.
+            for tag in soup.select(
+                ".mw-editsection, table, style, script, "
+                ".reference, sup.reference, .reflist, .navbox, "
+                ".metadata, .infobox, .sidebar, .hatnote, .ambox, "
+                ".vertical-navbox, .mw-references-wrap, .catlinks"
+            ):
+                tag.decompose()
+
+            paragraphs = []
+
+            for element in soup.find_all(["h2", "h3", "h4", "p"]):
+                if element.name.startswith("h"):
+                    heading = element.get_text(" ", strip=True)
+                    heading = re.sub(r"\[.*?\]", "", heading).strip()
+
+                    if heading.lower() in skip_sections:
+                        break
+
+                    continue
+
+                text = element.get_text(" ", strip=True)
+
+                # Remove citation markers such as [1], [23], [citation needed].
+                text = re.sub(r"\[\s*\d+(?:\s*,\s*\d+)*\s*\]", "", text)
+                text = re.sub(r"\[\s*citation needed\s*\]", "", text,
+                              flags=re.IGNORECASE)
+                text = re.sub(r"\s+", " ", text).strip()
+
+                if text:
+                    paragraphs.append(text)
+
+            extract = "\n\n".join(paragraphs).strip()
+
+            if not extract:
+                continue
+
+            extract = extract[:chars].strip()
+
             url = f"https://en.wikipedia.org/wiki/{_slug(title)}"
-            out.append(WikiDoc(title=title, url=url, text=extract,
-                               summary_chars=len(extract)))
+
+            out.append(
+                WikiDoc(
+                    title=title,
+                    url=url,
+                    text=extract,
+                    summary_chars=len(extract),
+                )
+            )
+
         return out
+
     except Exception as exc:
         log.info("wikipedia extracts failed: %s", exc)
         return []

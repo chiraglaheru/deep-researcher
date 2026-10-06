@@ -207,8 +207,10 @@ async def retrieve(state):
     # index, so later rounds treat it as already-read.
     if not index and config.wiki_enabled():
         try:
-            wiki_docs = await asyncio.to_thread(fetch_wikipedia, question) \
-                if question else []
+            subs = [sq.get("question", "") for sq in plan.get("subquestions", [])
+                    if isinstance(sq, dict) and sq.get("question")]
+            wiki_docs = await asyncio.to_thread(
+                fetch_wikipedia, question, 3, 6000, subs) if question else []
         except Exception as exc:
             log.info("wikipedia baseline failed: %s", exc)
             wiki_docs = []

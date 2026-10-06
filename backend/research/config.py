@@ -58,6 +58,11 @@ def wiki_max_docs() -> int:
     return _int("WIKI_MAX_DOCS", 3, 0, 10)
 
 
+def wiki_titles_per_query() -> int:
+    """Title hits kept per Wikipedia search (main question + each sub-question)."""
+    return _int("WIKI_TITLES_PER_QUERY", 2, 1, 10)
+
+
 def gap_dup_threshold() -> float:
     """Token-overlap (Jaccard) above which a follow-up repeats a seen query."""
     return _float("GAP_DUP_THRESHOLD", 0.60, 0.0, 1.0)

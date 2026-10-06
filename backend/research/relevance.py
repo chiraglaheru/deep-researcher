@@ -193,6 +193,28 @@ def target_variant_mismatch(record_targets: list[str] | None, claim: str,
     return None
 
 
+def search_keywords(question: str, subquestion: str = "",
+                    limit: int = 8) -> str:
+    """Keyword query for external search: content words only.
+
+    Topic terms shared with the main question come first, then the
+    sub-question's own distinctive terms. Basic English words never appear:
+    ``terms()`` already strips stopwords and short noise, so a query reads
+    like "mistral large throughput" instead of a full sentence.
+    """
+    main = list(dict.fromkeys(terms(question or "")))
+    if not (subquestion or "").strip():
+        return " ".join(main[:limit])
+    sub = list(dict.fromkeys(terms(subquestion)))
+    main_set = set(main)
+    shared = [w for w in sub if w in main_set]
+    extra = [w for w in sub if w not in main_set]
+    picked = (shared + extra)[:limit]
+    if not picked:
+        picked = main[:limit]
+    return " ".join(picked)
+
+
 def rank(chunks: list[Chunk], question: str, plan: dict | None = None,
          top_k: int | None = None) -> list[Scored]:
     """Score every chunk against the question; return the best ones."""

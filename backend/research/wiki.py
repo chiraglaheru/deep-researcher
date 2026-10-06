@@ -14,6 +14,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from .relevance import search_keywords
+
 log = logging.getLogger(__name__)
 
 API = "https://en.wikipedia.org/w/api.php"
@@ -169,10 +171,15 @@ def _slug(title: str) -> str:
 
 
 def fetch_wikipedia(question: str, max_docs: int = 3,
-                    chars_per_doc: int = 6000) -> list:
+                    chars_per_doc: int = 6000,
+                    subquestions: list[str] | None = None) -> list:
     """Return FetchedDoc list for Wikipedia, or [] on any failure.
 
-    Called from ``retrieve`` before any LLM work. Never raises.
+    Searches once for the main question and once per planned sub-question,
+    pooling distinct titles up to ``max_docs``. The question's own hits keep
+    priority; each sub-question then contributes its top titles, so coverage
+    follows the plan instead of a single shot. Called from ``retrieve``.
+    Never raises.
     """
     from .fetch import FetchedDoc, FULL
 
@@ -181,14 +188,32 @@ def fetch_wikipedia(question: str, max_docs: int = 3,
         if not _config.wiki_enabled():
             return []
         max_docs = min(max_docs, _config.wiki_max_docs())
+        per_query = _config.wiki_titles_per_query()
     except Exception:
-        pass
+        per_query = 2
 
     if not (question or "").strip() or max_docs <= 0:
         return []
     try:
-        titles = _search_titles(question.strip()[:300], limit=max_docs)
-        docs = _fetch_extracts(titles[:max_docs], chars=chars_per_doc)
+        # Keyword-only queries: relevant content words shared with the main
+        # question first, never basic English filler.
+        queries = [search_keywords(question)] + [
+            search_keywords(question, sq) for sq in (subquestions or [])
+            if (sq or "").strip()]
+        queries = [q for q in queries if q]
+        seen: list[str] = []
+        lowered: set[str] = set()
+        for query in queries:
+            for title in _search_titles(query[:300], limit=per_query):
+                key = title.lower()
+                if key not in lowered:
+                    lowered.add(key)
+                    seen.append(title)
+                if len(seen) >= max_docs:
+                    break
+            if len(seen) >= max_docs:
+                break
+        docs = _fetch_extracts(seen[:max_docs], chars=chars_per_doc)
         out = []
         for doc in docs:
             text = f"# {doc.title}\n\n{doc.text}".strip()

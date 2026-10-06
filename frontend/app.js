@@ -62,6 +62,26 @@ const reportLabel = document.getElementById("report-label");
 
 const reportCard = document.querySelector(".report-card");
 
+const tabButtons = [...document.querySelectorAll(".tab")];
+
+const tabPanels = [...document.querySelectorAll(".tab-panel")];
+
+const sourcesCount = document.getElementById("sources-count");
+
+const progressSteps = {};
+for (const step of document.querySelectorAll(".progress-step")) {
+    progressSteps[step.dataset.step] = step;
+}
+
+const progPlanDetail = document.getElementById("prog-plan-detail");
+const progSearchTitle = document.getElementById("prog-search-title");
+const progSearchDetail = document.getElementById("prog-search-detail");
+const progSearchSources = document.getElementById("prog-search-sources");
+const progReadTitle = document.getElementById("prog-read-title");
+const progReadDetail = document.getElementById("prog-read-detail");
+const progGapDetail = document.getElementById("prog-gap-detail");
+const progWriteDetail = document.getElementById("prog-write-detail");
+
 const ROUND_LABELS = {
     1: "Quick",
     2: "Standard",
@@ -74,6 +94,201 @@ let currentQuestion = "";
 let currentMarkdown = "";
 
 let progressiveHtml = "";
+
+let progressSearchSeen = new Set();
+let progressSearchResults = 0;
+let progressSections = 0;
+
+
+function selectTab(name, focusTab) {
+    for (const tab of tabButtons) {
+        const active = tab.dataset.tab === name;
+        tab.classList.toggle("is-active", active);
+        tab.setAttribute("aria-selected", active ? "true" : "false");
+        tab.tabIndex = active ? 0 : -1;
+        if (active && focusTab) {
+            tab.focus();
+        }
+    }
+    for (const panel of tabPanels) {
+        const active = panel.id === `panel-${name}`;
+        panel.classList.toggle("is-active", active);
+        if (active) {
+            panel.removeAttribute("hidden");
+        } else {
+            panel.setAttribute("hidden", "");
+        }
+    }
+}
+
+
+for (const tab of tabButtons) {
+    tab.addEventListener("click", () => selectTab(tab.dataset.tab, false));
+}
+
+const tabList = document.querySelector(".tabs");
+if (tabList) {
+    tabList.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+            return;
+        }
+        event.preventDefault();
+        const current = tabButtons.indexOf(document.activeElement);
+        const next = event.key === "ArrowRight"
+            ? (current + 1) % tabButtons.length
+            : (current - 1 + tabButtons.length) % tabButtons.length;
+        selectTab(tabButtons[next].dataset.tab, true);
+    });
+}
+
+
+function setStepState(step, state) {
+    const row = progressSteps[step];
+    if (!row) {
+        return;
+    }
+    row.classList.remove("is-todo", "is-active", "is-done");
+    row.classList.add(`is-${state}`);
+}
+
+
+function resetProgress() {
+    progressSearchSeen = new Set();
+    progressSearchResults = 0;
+    progressSections = 0;
+    for (const step of Object.keys(progressSteps)) {
+        setStepState(step, "todo");
+    }
+    if (progressSteps.gap) {
+        progressSteps.gap.classList.add("hidden");
+    }
+    if (progPlanDetail) {
+        progPlanDetail.textContent = "Waiting…";
+    }
+    if (progSearchTitle) {
+        progSearchTitle.textContent = "Searched 0 queries";
+    }
+    if (progSearchDetail) {
+        progSearchDetail.textContent = "Waiting for the first results…";
+    }
+    if (progSearchSources) {
+        progSearchSources.textContent = "";
+    }
+    if (progReadTitle) {
+        progReadTitle.textContent = "Read 0 pages";
+    }
+    if (progReadDetail) {
+        progReadDetail.textContent = "Waiting for downloads…";
+    }
+    if (progWriteDetail) {
+        progWriteDetail.textContent = "Waiting for sections…";
+    }
+    selectTab("report", false);
+}
+
+
+function progressPlan(plan) {
+    const subs = (plan && plan.subquestions) || [];
+    setStepState("plan", "done");
+    if (progPlanDetail) {
+        progPlanDetail.textContent = subs.length
+            ? `${subs.length} sub-question${subs.length === 1 ? "" : "s"} planned`
+            : "No sub-questions planned";
+    }
+    setStepState("search", "active");
+}
+
+
+function progressSearch(data) {
+    setStepState("search", "active");
+    progressSearchResults += data.error ? 0 : (data.count || 0);
+    const queries = searchList.children.length;
+    if (progSearchTitle) {
+        progSearchTitle.textContent =
+            `Searched ${queries} quer${queries === 1 ? "y" : "ies"}, `
+            + `${progressSearchResults} results`;
+    }
+    if (progSearchDetail) {
+        progSearchDetail.textContent = data.error
+            ? `${data.source || "search"} failed: ${data.error}`
+            : `Latest: ${data.source || "search"} returned ${data.count || 0}`;
+    }
+    if (progSearchSources && data.source
+        && !progressSearchSeen.has(data.source)) {
+        progressSearchSeen.add(data.source);
+        const tag = document.createElement("span");
+        tag.className = "plan-source";
+        tag.textContent = data.source;
+        progSearchSources.appendChild(tag);
+    }
+}
+
+
+function progressRead(data) {
+    if (!data || data.enabled === false) {
+        return;
+    }
+    setStepState("search", "done");
+    setStepState("read", "active");
+    if (progReadTitle) {
+        progReadTitle.textContent = `Read ${data.retrieved || 0} pages`;
+    }
+    if (progReadDetail) {
+        progReadDetail.textContent =
+            `${data.full_text || 0} full · ${data.partial || 0} partial · `
+            + `${data.metadata_only || 0} snippet-only`;
+    }
+}
+
+
+function progressGap(gap) {
+    if (!gap) {
+        return;
+    }
+    const row = progressSteps.gap;
+    const missing = (gap.missing || "").toLowerCase();
+    const hasFollowUps = (gap.follow_ups || []).length > 0;
+    if (gap.sufficient || missing.includes("round limit")) {
+        if (row) {
+            row.classList.add("hidden");
+        }
+        setStepState("read", "done");
+        return;
+    }
+    if (row) {
+        row.classList.remove("hidden");
+    }
+    setStepState("gap", "active");
+    if (progGapDetail) {
+        progGapDetail.textContent = hasFollowUps
+            ? `Chasing ${gap.follow_ups.length} follow-up${gap.follow_ups.length === 1 ? "" : "s"}: ${gap.missing || ""}`
+            : (gap.missing || "Checking coverage…");
+    }
+    setStepState("read", "done");
+}
+
+
+function progressWrite() {
+    progressSections += 1;
+    setStepState("write", "active");
+    if (progWriteDetail) {
+        progWriteDetail.textContent =
+            `${progressSections} section${progressSections === 1 ? "" : "s"} streamed`;
+    }
+}
+
+
+function progressDone() {
+    for (const step of Object.keys(progressSteps)) {
+        const row = progressSteps[step];
+        if (row && !row.classList.contains("hidden")) {
+            setStepState(step, "done");
+        }
+    }
+    if (progWriteDetail && progressSections === 0) {
+        progWriteDetail.textContent = "Report ready";
+    }
+}
 
 
 // The round ceiling is a server setting, so the options are fetched rather than
@@ -185,6 +400,30 @@ loadRoundOptions();
 loadThrottleState();
 
 
+// A fresh invitation on every boot: pure random pick, not tied to any
+// counter, so repeats carry no pattern.
+const PLACEHOLDERS = [
+    "What complex problem can we untangle together?",
+    "Got a tough technical challenge? Let's debug it.",
+    "Let's brainstorm some fresh ideas...",
+    "What's on your mind?",
+    "Which decision needs real evidence behind it?",
+    "Pick a debate — I'll gather the facts.",
+    "What technology should I compare for you?",
+    "Curious about something? Let's research it properly.",
+    "Give me a rabbit hole worth going down.",
+    "What should we investigate today?",
+    "Two options, one choice — I'll do the homework.",
+    "Ask the question Google can't answer in one link.",
+];
+
+if (questionInput) {
+    questionInput.placeholder = PLACEHOLDERS[
+        Math.floor(Math.random() * PLACEHOLDERS.length)
+    ];
+}
+
+
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
 
@@ -270,6 +509,7 @@ form.addEventListener("submit", async (event) => {
         errorBox.textContent = error.message;
         errorBox.classList.remove("hidden");
         report.classList.remove("is-loading");
+        snapRetrieval();
     } finally {
         stopResearchButton();
     }
@@ -333,9 +573,17 @@ function resetResults() {
     report.textContent = "";
     reportWords.textContent = "";
     retrievalStats.textContent = "";
+    for (const key of Object.keys(retrievalTiles)) {
+        if (retrievalTiles[key].timer) {
+            clearInterval(retrievalTiles[key].timer);
+        }
+    }
     retrievalTiles = {};
     for (const key in retrievalDisplayed) {
         retrievalDisplayed[key] = 0;
+    }
+    for (const key in retrievalTarget) {
+        retrievalTarget[key] = 0;
     }
     retrievalList.textContent = "";
     analysisStats.textContent = "";
@@ -362,6 +610,8 @@ function resetResults() {
     if (reportLabel) {
         reportLabel.textContent = "FINAL REPORT";
     }
+
+    resetProgress();
 }
 
 
@@ -370,18 +620,24 @@ function displayEvent(data, question) {
 
     if (data.type === "plan") {
         renderPlan(data.data);
+        progressPlan(data.data);
     }
 
     if (data.type === "results") {
         renderSearch(data);
+        progressSearch(data);
     }
 
     if (data.type === "evidence") {
         evidenceCount.textContent = `${data.count} sources collected`;
+        if (sourcesCount) {
+            sourcesCount.textContent = String(data.count);
+        }
     }
 
     if (data.type === "retrieval") {
         renderRetrieval(data.data);
+        progressRead(data.data);
     }
 
     if (data.type === "analysis") {
@@ -390,6 +646,7 @@ function displayEvent(data, question) {
 
     if (data.type === "gap") {
         renderGap(data.data);
+        progressGap(data.data);
     }
 
     if (data.type === "contradictions") {
@@ -406,6 +663,7 @@ function displayEvent(data, question) {
 
     if (data.type === "report_section") {
         renderReportSection(data);
+        progressWrite();
     }
 
     if (data.type === "report") {
@@ -413,6 +671,7 @@ function displayEvent(data, question) {
             renderStatus(data.status);
         }
         renderReport(data);
+        progressDone();
     }
 
     results.scrollIntoView({
@@ -437,6 +696,19 @@ const retrievalDisplayed = {
 };
 
 let retrievalTiles = {};
+
+const retrievalTarget = {
+    retrieved: 0,
+    attempted: 0,
+    full: 0,
+    partial: 0,
+    metadata: 0,
+    words: 0,
+    chunks: 0,
+    references: 0,
+};
+
+const retrievalFormat = {};
 
 
 function flowTile(key, label, hint) {
@@ -471,12 +743,13 @@ function flowNumber(key, target, format) {
         return;
     }
     target = Number(target) || 0;
-    if (entry.timer) {
-        clearInterval(entry.timer);
-        entry.timer = null;
+    retrievalTarget[key] = target;
+    if (format) {
+        retrievalFormat[key] = format;
     }
+    const fmt = retrievalFormat[key];
     const render = (value) => {
-        entry.valueEl.textContent = format ? format(value) : String(value);
+        entry.valueEl.textContent = fmt ? fmt(value) : String(value);
     };
     const reduce = window.matchMedia
         && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -485,22 +758,49 @@ function flowNumber(key, target, format) {
         render(target);
         return;
     }
-    entry.timer = setInterval(() => {
-        const remaining = target - retrievalDisplayed[key];
-        if (remaining <= 0) {
+    if (!entry.timer) {
+        entry.timer = setInterval(() => crawlNumber(key), 150);
+    }
+}
+
+
+function crawlNumber(key) {
+    const entry = retrievalTiles[key];
+    if (!entry) {
+        return;
+    }
+    const target = retrievalTarget[key] || 0;
+    const fmt = retrievalFormat[key];
+    const render = (value) => {
+        entry.valueEl.textContent = fmt ? fmt(value) : String(value);
+    };
+    const remaining = target - retrievalDisplayed[key];
+    // Hold just short of the target so counters keep moving until research
+    // completes; the final snap lands the exact backend totals.
+    const holdback = target < 25 ? 1 : Math.round(target * 0.04);
+    if (remaining <= holdback) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+        return;
+    }
+    const hop = Math.max(1, Math.round(remaining * (0.03 + Math.random() * 0.05)));
+    retrievalDisplayed[key] += Math.min(hop, remaining - holdback);
+    render(retrievalDisplayed[key]);
+}
+
+
+function snapRetrieval() {
+    for (const key of Object.keys(retrievalTiles)) {
+        const entry = retrievalTiles[key];
+        if (entry.timer) {
             clearInterval(entry.timer);
             entry.timer = null;
-            render(target);
-            return;
         }
-        const hop = Math.max(1, Math.round(remaining * (0.04 + Math.random() * 0.12)));
-        retrievalDisplayed[key] += Math.min(hop, remaining);
-        render(retrievalDisplayed[key]);
-        if (retrievalDisplayed[key] >= target) {
-            clearInterval(entry.timer);
-            entry.timer = null;
-        }
-    }, 130);
+        const target = retrievalTarget[key] || 0;
+        const fmt = retrievalFormat[key];
+        retrievalDisplayed[key] = target;
+        entry.valueEl.textContent = fmt ? fmt(target) : String(target);
+    }
 }
 
 
@@ -605,6 +905,7 @@ function renderRetrieval(data) {
         }
 
         retrievalDetails.classList.remove("hidden");
+        retrievalDetails.open = true;
     }
 }
 
@@ -917,6 +1218,7 @@ function renderReport(data) {
     currentMarkdown = data.data || "";
     progressiveHtml = "";
     report.classList.remove("is-loading");
+    snapRetrieval();
 
     // Server pre-compiles markdown to HTML to avoid freezing the UI on
     // 15k-word reports. The client renderer is only a fallback for old payloads.

@@ -48,8 +48,11 @@ def _cached_run(source: str, query: str, n: int, params: dict) -> dict:
     return result
 
 
-def _item(title, url, snippet, date, kind, query):
-    return {"title": title or "", "url": url, "snippet": snippet or "", "date": date, "type": kind, "query": query}
+def _item(title, url, snippet, date, kind, query, extra=None):
+    row = {"title": title or "", "url": url, "snippet": snippet or "", "date": date, "type": kind, "query": query}
+    if extra:
+        row.update(extra)
+    return row
 
 
 def _blocked_host(url: str, blocked: tuple[str, ...]) -> bool:
@@ -165,15 +168,158 @@ def search(source: str, query: str, n: int = 6) -> list[dict]:
         return _search_uncapped(source, query, n)
 
 
-def _search_uncapped(source: str, query: str, n: int = 6) -> list[dict]:
+def search_full(source: str, query: str, n: int = 6) -> tuple[list[dict], dict]:
+    """Items plus response-level extras, for stages that use more than links.
+
+    ``meta`` carries ``related_questions`` and ``related_searches`` (free
+    follow-up discovery), ``knowledge_graph`` (entity + type for
+    disambiguation) and ``answer_box`` when Google returned them. Empty in
+    mock mode and for engines that do not provide them.
+    """
+    if _mock_enabled():
+        return _mock_search(source, query, n), {}
+    from .throttle import get
+    with get("search").slot():
+        return _run_search(source, query, n)
+
+
+def _scholar_extras(x: dict) -> dict:
+    """Authority metadata SerpApi ships with Scholar rows, defensively read."""
+    pub = x.get("publication_info") or {}
+    inline = x.get("inline_links") or {}
+    cited = inline.get("cited_by") or {}
+    total = cited.get("total", x.get("cited_by", 0))
+    try:
+        total = int(total)
+    except (TypeError, ValueError):
+        total = 0
+    pdf_url = None
+    for resource in x.get("resources") or []:
+        if isinstance(resource, dict) and "pdf" in str(resource.get("file_format", "")).lower():
+            pdf_url = resource.get("link") or None
+            break
+    return {
+        "cited_by": total,
+        "scholar_id": x.get("result_id") or cited.get("cites_id") or "",
+        "pdf_url": pdf_url,
+        "scholar_summary": pub.get("summary") or "",
+    }
+
+
+def _scholar_item(x: dict, query: str) -> dict:
+    pub = x.get("publication_info") or {}
+    extra = _scholar_extras(x)
+    return _item(x.get("title"), x.get("link"), x.get("snippet"),
+                 pub.get("summary"), "scholar", query, extra)
+
+
+def _knowledge_meta(resp: dict) -> dict:
+    """Response-level extras: questions, related searches, entity, answer."""
+    meta: dict = {}
+    questions = []
+    for entry in (resp.get("related_questions") or [])[:8]:
+        text = (entry.get("question") or "").strip() if isinstance(entry, dict) else ""
+        if text:
+            questions.append(text)
+    if questions:
+        meta["related_questions"] = questions
+    searches = []
+    for entry in (resp.get("related_searches") or [])[:8]:
+        text = (entry.get("query") or "").strip() if isinstance(entry, dict) else ""
+        if text:
+            searches.append(text)
+    if searches:
+        meta["related_searches"] = searches
+    graph = resp.get("knowledge_graph") or {}
+    if isinstance(graph, dict) and graph.get("title"):
+        meta["knowledge_graph"] = {
+            "title": graph.get("title", ""),
+            "type": graph.get("type", ""),
+            "description": (graph.get("description") or "")[:500],
+        }
+    box = resp.get("answer_box") or {}
+    if isinstance(box, dict) and box.get("link"):
+        meta["answer_box"] = {
+            "title": box.get("title", ""),
+            "link": box.get("link", ""),
+            "text": box.get("answer") or box.get("snippet") or "",
+        }
+    return meta
+
+
+def _run_search(source: str, query: str, n: int = 6) -> tuple[list[dict], dict]:
     if source == "news":
         rows = _cached_run(source, query, n, {"engine": "google_news", "q": query}).get("news_results", [])[:n]
-        return _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"),
+        items = _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"),
                       x.get("iso_date") or x.get("date"), "news", query) for x in rows], source)
+        return items, {}
     if source == "scholar":
         rows = _cached_run(source, query, n, {"engine": "google_scholar", "q": query}).get("organic_results", [])[:n]
-        return [_item(x.get("title"), x.get("link"), x.get("snippet"),
-                      (x.get("publication_info") or {}).get("summary"), "scholar", query) for x in rows]
+        return [_scholar_item(x, query) for x in rows], {}
+    if source == "patent":
+        resp = _cached_run(source, query, n, {"engine": "google_patents", "q": query})
+        rows = (resp.get("organic_results") or resp.get("patents_results") or [])[:n]
+        return [_item(x.get("title"), x.get("link"), x.get("snippet") or x.get("description"),
+                      x.get("publication_date") or x.get("date"), "patent", query) for x in rows], {}
     q = f"site:github.com {query}" if source == "github" else query
-    rows = _cached_run(source, query, n, {"engine": "google", "q": q}).get("organic_results", [])[:n]
-    return _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"), x.get("date"), source, query) for x in rows], source)
+    resp = _cached_run(source, query, n, {"engine": "google", "q": q})
+    rows = resp.get("organic_results", [])[:n]
+    items = _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"), x.get("date"), source, query) for x in rows], source)
+    meta = _knowledge_meta(resp)
+    graph = meta.get("knowledge_graph") or {}
+    if graph:
+        for row in items:
+            row["entity"] = graph.get("title", "")
+            row["entity_type"] = graph.get("type", "")
+    box = meta.get("answer_box") or {}
+    if box.get("link") and box.get("text"):
+        items.append(_item(box.get("title") or query, box["link"],
+                           f"Direct answer: {box['text']}", "", source, query,
+                           {"answer": True}))
+    return items, meta
+
+
+def _search_uncapped(source: str, query: str, n: int = 6) -> list[dict]:
+    return _run_search(source, query, n)[0]
+
+
+def expand_query(query: str) -> str:
+    """Top autocomplete suggestion for a draft query, or "" when none fits.
+
+    Used to sharpen vague planner queries with the phrasing real searchers
+    use. Never raises: callers keep the original query on any failure.
+    """
+    if _mock_enabled() or not (query or "").strip():
+        return ""
+    try:
+        from .throttle import get
+        with get("search").slot():
+            resp = _cached_run("autocomplete", query, 5,
+                               {"engine": "google_autocomplete", "q": query})
+    except Exception:
+        return ""
+    for suggestion in resp.get("suggestions", []) or []:
+        value = ((suggestion or {}).get("value") or "").strip()
+        if value and value.lower() != query.lower() and len(value.split()) <= 12:
+            return value
+    return ""
+
+
+def cited_by_search(scholar_id: str, query: str = "", n: int = 6) -> list[dict]:
+    """Forward citation chase: documents citing the given Scholar article.
+
+    The Scholar ``cites`` parameter lists citers, optionally searched within
+    via ``q``. Returns scholar-normalized items; [] on any failure.
+    """
+    if _mock_enabled() or not scholar_id:
+        return []
+    params = {"engine": "google_scholar", "cites": scholar_id}
+    if query:
+        params["q"] = query
+    try:
+        from .throttle import get
+        with get("search").slot():
+            resp = _cached_run("scholar-cites", scholar_id + "\x00" + query, n, params)
+    except Exception:
+        return []
+    return [_scholar_item(x, query) for x in resp.get("organic_results", [])[:n]]

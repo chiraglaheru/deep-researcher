@@ -133,6 +133,40 @@ def arxiv_from_doi(doi: str) -> str:
     return f"https://arxiv.org/abs/{match.group(1)}" if match else ""
 
 
+def forward_candidates(sources: list[dict], question: str,
+                       known: set[str], index: dict) -> list[str]:
+    """Follow citations forward: documents citing highly-cited papers.
+
+    Outbound links point backward in time; citers are usually newer, so a
+    heavily-cited paper is a bridge to the state of the art. Bounded by
+    SCHOLAR_FORWARD_MAX and skipped for URLs already retrieved.
+    """
+    from . import config as _config
+    from .searcher import cited_by_search
+
+    depth = _config.scholar_forward_max()
+    if depth <= 0:
+        return []
+    ranked = sorted(
+        (s for s in sources
+         if s.get("scholar_id") and int(s.get("cited_by", 0) or 0) > 0),
+        key=lambda s: -int(s.get("cited_by", 0) or 0),
+    )[:depth]
+    out: list[str] = []
+    for source in ranked:
+        try:
+            hits = cited_by_search(source["scholar_id"], question)
+        except Exception:
+            continue
+        for hit in hits:
+            url = hit.get("url", "")
+            if url and url not in known and url not in index and url not in out:
+                out.append(url)
+    if out:
+        log.info("reference discovery: chasing %d forward citation(s)", len(out))
+    return out
+
+
 def describe(found: list[str], rejected: int) -> str:
     if not found and not rejected:
         return "no outbound references were followed"

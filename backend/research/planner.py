@@ -27,7 +27,7 @@ its of on or the their there these this to what which who why with do does did
 about across during over under
 """.split())
 
-SOURCES = ("web", "news", "scholar", "github")
+SOURCES = ("web", "news", "scholar", "github", "patent")
 
 SYSTEM = """You are a research planner. Break the user's question into 3-5 sub-questions.
 Sub-questions must be DISTINCT from each other: each must cover a different
@@ -36,9 +36,14 @@ differ only in wording.
 For each, give 1-2 concrete search queries and the best source for each:
 - web: docs, blogs, comparisons   - news: recent events/announcements
 - scholar: papers, benchmarks     - github: repos, issues, ecosystem activity
+- patent: patented mechanisms, filings, prior art (technical questions only)
 Return JSON only:
 {"subquestions":[{"question":"...","searches":[{"source":"web","query":"..."}]}]}
-Today's date is {today}. Include the current year in queries where recency matters."""
+Today's date is {today}. Include the current year in queries where recency matters.
+Make every query self-contained: include the compared entities and the domain,
+never a bare ambiguous term (write "attention mechanism transformer", not
+"attention"). For technical comparisons, route at least one query to scholar
+or patent rather than web commentary."""
 
 REGEN_SYSTEM = """You are a research planner replacing sub-questions that were rejected as duplicates.
 
@@ -250,15 +255,29 @@ def regenerate(question: str, kept: list[dict], rejected: list[dict]) -> list[di
 
 
 def make_plan(question: str) -> dict:
-    """Plan, deduplicate, and replace duplicates where possible."""
-    raw = ask(SYSTEM.replace("{today}", str(datetime.date.today())),
-              question, json_mode=True)
+    """Plan, deduplicate, and replace duplicates where possible.
+
+    A model failure here must not kill the run: fall back to a single
+    generic sub-question so retrieval and synthesis still have something to
+    work with. Thin coverage is then reported honestly downstream.
+    """
+    try:
+        raw = ask(SYSTEM.replace("{today}", str(datetime.date.today())),
+                  question, json_mode=True)
+    except Exception as exc:
+        log.warning("planner model failed (%s); using a single-question "
+                    "fallback plan", type(exc).__name__)
+        asked = (question or "").strip()
+        return {"subquestions": [{"question": asked or "research topic",
+                                  "searches": [
+                                      {"source": "web", "query": asked},
+                                      {"source": "news", "query": asked}]}]}
     if not isinstance(raw, dict):
         return {"subquestions": []}
 
     cleaned, rejected = dedupe_subquestions(raw, question)
     if not rejected:
-        return cleaned
+        return _expand_plan(cleaned)
 
     replacements = regenerate(question, cleaned["subquestions"], rejected)
 
@@ -276,5 +295,43 @@ def make_plan(question: str) -> dict:
         # Everything was a duplicate of something. Keeping one is strictly better
         # than planning nothing, so fall back to the first cleaned sub-question.
         log.warning("planner: every sub-question looked duplicated; keeping one")
-        return cleaned if cleaned["subquestions"] else {"subquestions": []}
-    return final
+        fallback = cleaned if cleaned["subquestions"] else {"subquestions": []}
+        return _expand_plan(fallback)
+    return _expand_plan(final)
+
+
+def _expand_plan(plan: dict) -> dict:
+    """Sharpen each query with autocomplete phrasing, when enabled.
+
+    Bounded to one suggestion per query and strictly additive: a suggestion
+    replaces the draft only when it introduces a new technical term, and any
+    failure keeps the original. Never raises.
+    """
+    try:
+        from . import config as _config
+        from .relevance import terms as _terms
+        from .searcher import expand_query
+        if not _config.search_expand_queries():
+            return plan
+    except Exception:
+        return plan
+    for sq in plan.get("subquestions", []):
+        if not isinstance(sq, dict):
+            continue
+        for search in sq.get("searches", []):
+            if not isinstance(search, dict):
+                continue
+            draft = str(search.get("query") or "")
+            if not draft:
+                continue
+            try:
+                suggestion = expand_query(draft)
+            except Exception:
+                continue
+            if not suggestion:
+                continue
+            novel = set(_terms(suggestion)) - set(_terms(draft))
+            if novel and len(suggestion.split()) <= 12:
+                log.info("planner: expanded %r -> %r", draft, suggestion)
+                search["query"] = suggestion
+    return plan

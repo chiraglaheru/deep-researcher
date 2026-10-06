@@ -1295,3 +1295,152 @@ details summary {
         animation-duration: 0.01s;
     }
 }
+
+/* ---- tabbed results navigation ------------------------------------------ */
+
+.tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-top: 26px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    overflow-x: auto;
+}
+
+:root[data-theme="light"] .tabs {
+    border-bottom-color: #e3ddd0;
+}
+
+.tab {
+    width: auto;
+    flex: none;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 10px 10px 0 0;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 0.6rem 1rem;
+    margin-bottom: -1px;
+    cursor: pointer;
+}
+
+.tab:hover {
+    color: var(--ink);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="light"] .tab:hover {
+    background: rgba(60, 50, 30, 0.05);
+}
+
+.tab.is-active {
+    color: var(--ink);
+    border-bottom-color: #D97756;
+}
+
+.tab:focus-visible {
+    outline: 2px solid #D97756;
+    outline-offset: 2px;
+}
+
+.tab-panel[hidden] {
+    display: none;
+}
+
+/* ---- step-by-step research progress -------------------------------------- */
+
+.progress-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.progress-step {
+    position: relative;
+    display: flex;
+    gap: 0.8rem;
+    align-items: flex-start;
+    padding: 0.55rem 0;
+}
+
+.progress-step:not(:last-child)::before {
+    content: "";
+    position: absolute;
+    left: 10px;
+    top: 32px;
+    bottom: -4px;
+    width: 2px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+:root[data-theme="light"] .progress-step:not(:last-child)::before {
+    background: #e3ddd0;
+}
+
+.progress-icon {
+    position: relative;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 2px solid #3a3a3a;
+    background: transparent;
+}
+
+.progress-step.is-todo {
+    opacity: 0.55;
+}
+
+.progress-step.is-active .progress-icon {
+    border-color: #555;
+    border-top-color: #D97756;
+    animation: progress-spin 1s linear infinite;
+}
+
+.progress-step.is-done .progress-icon {
+    background: #D97756;
+    border-color: #D97756;
+}
+
+.progress-step.is-done .progress-icon::after {
+    content: "✓";
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+@keyframes progress-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.progress-body strong {
+    display: block;
+    font-size: 0.92rem;
+    color: var(--ink);
+}
+
+.progress-body small {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.progress-body .plan-sources {
+    margin-top: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .progress-step.is-active .progress-icon {
+        animation: none;
+        border-color: #D97756;
+    }
+}

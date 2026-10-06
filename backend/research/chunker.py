@@ -46,6 +46,9 @@ class Chunk:
     source_publisher: str = ""
     authors: list[str] = field(default_factory=list)
     doi: str = ""
+    entity: str = ""                  # knowledge-graph entity for this source
+    entity_type: str = ""             # ... and its type (song, product, ...)
+    cited_by: int = 0                 # Scholar citation count, when known
 
     @property
     def word_count(self) -> int:
@@ -79,6 +82,9 @@ def chunk_document(
     authors: list[str] | None = None,
     doi: str = "",
     pages: int = 0,
+    entity: str = "",
+    entity_type: str = "",
+    cited_by: int = 0,
 ) -> list[Chunk]:
     """Split one document into provenance-carrying chunks.
 
@@ -120,6 +126,9 @@ def chunk_document(
                 source_publisher=source_publisher,
                 authors=list(authors or []),
                 doi=doi,
+                entity=entity,
+                entity_type=entity_type,
+                cited_by=cited_by,
             ))
         buffer, buffer_len = [], 0
         char_start += len(content) + 2

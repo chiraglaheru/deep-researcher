@@ -271,7 +271,10 @@ class Fetcher:
                                                "application/json", "text/csv")):
             return self._from_plain(doc, body)
         if "text/html" in doc.content_type or b"<html" in head:
-            return self._from_html(doc, body, truncated)
+            doc = self._from_html(doc, body, truncated)
+            if "patents.google.com" in (doc.final_url or doc.url):
+                doc.method = "patent"
+            return doc
         return self._from_plain(doc, body)             # unknown type: try as text
 
     # -- pdf ---------------------------------------------------------------

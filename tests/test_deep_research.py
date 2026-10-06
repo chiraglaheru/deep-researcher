@@ -436,7 +436,7 @@ def test_evidence_accumulates_across_rounds(monkeypatch):
 
     monkeypatch.setattr(G.config, "fetch_enabled", lambda: False)
     monkeypatch.setattr(G.config, "analysis_enabled", lambda: True)
-    monkeypatch.setattr(G, "search", lambda source, query, n=6: [])
+    monkeypatch.setattr(G, "search_full", lambda source, query, n=6: ([], {}))
 
     state = {
         "question": "q", "max_rounds": 2, "round": 1, "plan": {},

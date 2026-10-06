@@ -589,6 +589,61 @@ def test_advance_notice_names_the_fallback_and_its_position():
     assert "no fallback models left" in llm._advance_notice("groq/c", 2, 3, chain, "x")
 
 
+# --- malformed model JSON ----------------------------------------------------
+#
+# Models routinely return prose-wrapped, trailing-comma, or truncated JSON.
+# ask() salvages what it can for free, moves to the next model on failure,
+# and surfaces LLMChainError (never a raw decoder traceback) when all fail.
+
+
+def test_prose_wrapped_json_is_salvaged():
+    def fake_completion(**kwargs):
+        return FakeResponse('Here is the plan:\n{"subquestions": []}\nDone.')
+
+    _chain("gemini/gemini-3.6-flash")
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user", json_mode=True) == {"subquestions": []}
+
+
+def test_trailing_comma_json_is_salvaged():
+    def fake_completion(**kwargs):
+        return FakeResponse('{"a": 1, "b": [2, 3,],}')
+
+    _chain("gemini/gemini-3.6-flash")
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user", json_mode=True) == {"a": 1, "b": [2, 3]}
+
+
+def test_garbage_json_moves_to_next_model():
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "gemini/gemini-3.6-flash":
+            return FakeResponse("not json at all {{{")
+        return FakeResponse('{"ok": true}')
+
+    _chain("gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash")
+
+    with completing(fake_completion):
+        assert llm.ask("sys", "user", json_mode=True) == {"ok": True}
+
+    assert calls == ["gemini/gemini-3.6-flash", "gemini/gemini-3.7-flash"]
+
+
+def test_all_garbage_json_raises_chain_error():
+    def fake_completion(**kwargs):
+        return FakeResponse("{{{ definitely not json")
+
+    _chain("gemini/gemini-3.6-flash")
+
+    with completing(fake_completion):
+        with pytest.raises(llm.LLMChainError):
+            llm.ask("sys", "user", json_mode=True)
+
+
 # --- chain-level retry after temporary rate limits ---------------------------
 #
 # When every model in the chain failed only with temporary quotas, one bounded

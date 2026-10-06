@@ -25,6 +25,7 @@ _SOURCE_TYPE_LABELS = {
     "pdf": "PDF document",
     "arxiv": "arXiv preprint",
     "github": "GitHub repository",
+    "patent": "patent",
     "plain": "plain text / code",
     "html": "web page",
     "none": "unknown",
@@ -63,6 +64,7 @@ class Evidence:
     quality: str = "moderate"           # see QUALITY_ORDER
     limitations: str = ""
     confidence: float = 0.5
+    citation_count: int = 0           # Scholar cited-by total, when known
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -114,6 +116,8 @@ class Evidence:
             lines.append(f"    QUOTE: \"{self.quote[:300]}\"")
         lines.append(f"    QUALITY: {self.quality} | RETRIEVAL: {self.retrieval_status}"
                      + (f" ({self.retrieval_limitation})" if self.retrieval_limitation else ""))
+        if self.citation_count:
+            lines.append(f"    CITED BY: {self.citation_count} later works")
         if self.limitations:
             lines.append(f"    LIMITATIONS: {self.limitations}")
         return "\n".join(lines)
@@ -146,6 +150,7 @@ def from_chunk(chunk, index: int) -> Evidence:
                              "the document itself was not retrieved",
         quality="weak",
         confidence=0.2,
+        citation_count=int(getattr(chunk, "cited_by", 0) or 0),
     )
 
 

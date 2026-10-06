@@ -182,16 +182,17 @@ def test_rounds_three_runs_the_follow_up_branch_and_finishes_sufficient():
     assert order[-2] == "report"
 
 
-def test_llm_mock_fail_planner_gives_error_then_done(monkeypatch):
+def test_llm_mock_fail_planner_falls_back_and_completes(monkeypatch):
+    """A dead planner degrades to a generic plan instead of killing the run."""
     monkeypatch.setenv("LLM_MOCK_FAIL", "planner")
 
     events = run_sse("What is FastAPI?", 1)
     order = types_of(events)
 
-    assert order[0] == "error"
+    assert order[0] == "plan"
     assert order[-1] == "done"
-    assert len(order) == 2, f"nothing should follow the error: {order}"
-    assert "planner" in events[0]["message"]
+    assert "report" in order, f"the fallback plan must still produce a report: {order}"
+    assert "error" not in order
 
 
 def test_llm_mock_fail_synth_keeps_results_then_errors(monkeypatch):

@@ -34,11 +34,11 @@ from .fetch import FAILED, Fetcher, FULL, METADATA, PARTIAL, snippet_only_doc
 from .llm import CallBudget, ask
 from .markdown_html import render_markdown_html
 from .planner import SOURCES, make_plan
-from .references import candidates, describe
+from .references import candidates, describe, forward_candidates
 from .relevance import dimensions as question_dimensions
-from .relevance import diversify, rank, source_context
+from .relevance import diversify, rank, source_context, uncovered_questions
 from .report import evidence_holes, generate_report, status_headline, write_report
-from .searcher import search
+from .searcher import cited_by_search, search_full
 from .wiki import fetch_wikipedia
 
 log = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class State(TypedDict, total=False):
     seen: list                            # "source|query" already run
     raw: Annotated[list, operator.add]    # parallel workers append here
     log: Annotated[list, operator.add]
+    paa: Annotated[list, operator.add]   # related questions/searches bank
     evidence: list
     gap: dict
     contradictions: list
@@ -156,10 +157,14 @@ def route_after_gap(state):
 
 async def search_worker(task):
     try:
-        res, err = await asyncio.to_thread(search, task["source"], task["query"]), None
+        (res, meta), err = await asyncio.to_thread(
+            search_full, task["source"], task["query"]), None
     except Exception as e:
-        res, err = [], str(e)
-    return {"raw": res, "log": [{**task, "count": len(res), "error": err}]}
+        (res, meta), err = ([], {}), str(e)
+    bank = list(meta.get("related_questions", []) or [])
+    bank += list(meta.get("related_searches", []) or [])
+    return {"raw": res, "log": [{**task, "count": len(res), "error": err}],
+            "paa": bank}
 
 
 def collect(state):
@@ -256,6 +261,12 @@ async def retrieve(state):
     if config.references_enabled() and config.references_max() > 0:
         known = set(index) | {s["url"] for s in sources}
         leads = [u for u in candidates(docs, question, known) if u not in index]
+        # Forward chase: citing documents are usually newer than the cited
+        # work, so highly-cited papers lead to the state of the art.
+        for url in forward_candidates(sources, question, known, index):
+            if url not in leads:
+                leads.append(url)
+        leads = leads[:config.references_max()]
         if leads:
             try:
                 extra = await asyncio.to_thread(fetcher.fetch_many, leads)
@@ -285,7 +296,9 @@ async def retrieve(state):
             known_documents[doc.url] = doc
 
     chunks: list = []
+    by_url = {s["url"]: s for s in sources if s.get("url")}
     for source_id, doc in enumerate(known_documents.values(), 1):
+        meta = by_url.get(doc.url, {})
         chunks.extend(chunk_document(
             doc.text,
             source_id=f"S{source_id}",
@@ -298,6 +311,9 @@ async def retrieve(state):
             authors=doc.authors,
             doi=doc.doi,
             pages=doc.pages,
+            entity=meta.get("entity", ""),
+            entity_type=meta.get("entity_type", ""),
+            cited_by=int(meta.get("cited_by", 0) or 0),
         ))
 
     stats = _aggregate_retrieval(index, chunks, references_used)
@@ -533,6 +549,11 @@ async def gap_check(state):
     if holes:
         prompt += ("\n\nUNDER-EVIDENCED DIMENSIONS (prioritize follow-up searches "
                    "that fill exactly these):\n" + "\n".join(f"- {h}" for h in holes))
+    asked = uncovered_questions(state.get("paa") or [], records)
+    if asked:
+        prompt += ("\n\nASKED ELSEWHERE BUT UNANSWERED HERE (real follow-up "
+                   "questions from related searches; prefer these over "
+                   "inventing queries):\n" + "\n".join(f"- {q}" for q in asked))
 
     try:
         gap = await asyncio.to_thread(ask, GAP_SYS, prompt, True)

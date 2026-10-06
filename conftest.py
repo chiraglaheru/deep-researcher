@@ -53,6 +53,9 @@ def clean_env(monkeypatch, request, tmp_path):
 
     # Wikipedia is a live network baseline; keep the suite offline.
     monkeypatch.setenv("WIKI_ENABLED", "0")
+    # Query expansion hits real SerpApi autocomplete calls; keep the suite
+    # offline and deterministic by defaulting it off here.
+    monkeypatch.setenv("SEARCH_EXPAND_QUERIES", "0")
 
     # Pacing is a runtime policy, not a correctness one. Leaving it on would add
     # real seconds to every test that exercises the model path; the tests that

@@ -21,14 +21,16 @@ from . import config
 from .chunker import Chunk
 from .evidence import (Evidence, dedupe, from_chunk, normalise_confidence,
                        normalise_quality, quote_is_supported)
-from .llm import LLMChainError, ask
+from .llm import GROUNDING, LLMChainError, ask
 from .relevance import (Scored, dimensions as question_dimensions,
                         target_variant_mismatch)
 from .relevance import targets as question_targets
 
 log = logging.getLogger(__name__)
 
-EXTRACT_SYSTEM = """You extract research evidence from source passages.
+EXTRACT_SYSTEM = GROUNDING + """
+
+You extract research evidence from source passages.
 
 You are given numbered passages, each with an id like S3#2 (source 3, chunk 2).
 For each passage, extract only the findings that actually bear on the research
@@ -61,7 +63,9 @@ Return JSON only:
 "dimension":"one of the dimensions, or an empty string","targets":["..."],
 "quality":"strong|moderate|weak|anecdotal|speculative","limitations":"...","confidence":0.0}]}"""
 
-SYNTH_SYSTEM = """You summarise what a single source actually establishes.
+SYNTH_SYSTEM = GROUNDING + """
+
+You summarise what a single source actually establishes.
 
 Using only the evidence records from ONE source, state what that source
 supports, what it does not support, and how much weight it can bear.
@@ -144,7 +148,8 @@ def extract_evidence(
             continue
         except Exception as exc:                       # a bad batch must not kill the run
             notes.append(f"extraction batch {number} errored: {type(exc).__name__}")
-            log.warning("extraction batch %d errored: %s", number, exc, exc_info=True)
+            log.warning("extraction batch %d errored: %s: %s", number,
+                        type(exc).__name__, str(exc)[:160])
             continue
 
         accepted, rejected = _harvest(reply, batch, by_id)
@@ -280,6 +285,7 @@ def _harvest(reply, batch: list[Scored],
             quality=normalise_quality(entry.get("quality")),
             limitations=str(entry.get("limitations") or "").strip()[:400],
             confidence=normalise_confidence(entry.get("confidence")),
+            citation_count=int(getattr(chunk, "cited_by", 0) or 0),
         )
 
         # A passage we only partly read cannot support strong evidence.
@@ -375,7 +381,9 @@ def _str_list(value) -> list[str]:
     return []
 
 
-CONFLICT_SYSTEM = """You identify genuine disagreements between research findings.
+CONFLICT_SYSTEM = GROUNDING + """
+
+You identify genuine disagreements between research findings.
 
 You are given numbered findings, each from a specific source with its date and
 type. Find places where sources genuinely contradict each other -- different

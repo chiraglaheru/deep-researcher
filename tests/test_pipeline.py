@@ -49,9 +49,9 @@ def test_graph_runs_end_to_end_with_mocks(monkeypatch):
     monkeypatch.setattr(G.config, "fetch_enabled", lambda: False)
 
     def fake_search(source, query, n=6):
-        return [{"title": f"{source}{query}", "url": f"https://x.com/{source}/{query}",
-                 "snippet": "s", "date": "2025", "type": source, "query": query}]
-    monkeypatch.setattr(G, "search", fake_search)
+        return ([{"title": f"{source}{query}", "url": f"https://x.com/{source}/{query}",
+                 "snippet": "s", "date": "2025", "type": source, "query": query}], {})
+    monkeypatch.setattr(G, "search_full", fake_search)
 
     calls = {"n": 0}
 
@@ -84,7 +84,7 @@ def test_gap_check_terminates_when_no_follow_ups(monkeypatch):
     monkeypatch.setattr(G, "make_plan", lambda q: {"subquestions": [{"question": "a", "searches": [
         {"source": "web", "query": "rust"}]}]})
     monkeypatch.setattr(G.config, "fetch_enabled", lambda: False)
-    monkeypatch.setattr(G, "search", lambda source, query, n=6: [])
+    monkeypatch.setattr(G, "search_full", lambda source, query, n=6: ([], {}))
     monkeypatch.setattr(G, "ask", lambda *a, **k: {"sufficient": False, "missing": "x",
                                                    "follow_ups": []})
     monkeypatch.setattr(G, "generate_report",

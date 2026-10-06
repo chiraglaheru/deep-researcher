@@ -23,7 +23,7 @@ import re
 
 from . import config
 from .evidence import (Evidence, QUALITY_ORDER, source_type_label, statistics)
-from .llm import LLMChainError, ask
+from .llm import GROUNDING, LLMChainError, ask
 from .output_pool import OutputMemoryPool
 from .relevance import dimensions as question_dimensions
 from .relevance import target_variant_mismatch
@@ -33,7 +33,9 @@ log = logging.getLogger(__name__)
 
 # The rules that apply to every section. Repeated per call because each section
 # is generated independently and would otherwise drift.
-DISCIPLINE = """CITATION RULES (these are not optional):
+DISCIPLINE = f"""{GROUNDING}
+
+CITATION RULES (these are not optional):
 - Cite with the bracketed reference numbers given to you, e.g. [3] or [3][7].
 - Place the citation immediately after the specific claim it supports, not at
   the end of a paragraph containing several unrelated claims.
@@ -196,7 +198,8 @@ def assign_references(records: list[Evidence]) -> dict[str, int]:
         url = record.usable_url
         if not url:
             continue
-        rank = (record.rank, -record.confidence, record.evidence_id)
+        rank = (record.rank, -record.confidence, -record.citation_count,
+                record.evidence_id)
         if url not in best or rank < best[url]:
             best[url] = rank
             order.setdefault(url, None)
@@ -264,6 +267,8 @@ def _evidence_block(records: list[Evidence], refs: dict[str, int],
             lines.append(f"    quote: \"{record.quote[:260]}\"")
         lines.append(f"    evidence strength: {record.quality}"
                      + (f" | retrieval: {record.retrieval_status}" if record.retrieval_status != "full" else ""))
+        if record.citation_count:
+            lines.append(f"    cited by: {record.citation_count} later works")
         if record.limitations:
             lines.append(f"    limitations: {record.limitations}")
     return "\n".join(lines)

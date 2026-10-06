@@ -27,6 +27,7 @@ async def deep_research(question: str, max_rounds: int = 3):
         "raw": [],
         "log": [],
         "notes": [],
+        "paa": [],
     }
 
     async for chunk in graph.astream(init, stream_mode="updates"):

@@ -118,6 +118,20 @@ def results_per_search() -> int:
     return _int("RESEARCH_RESULTS_PER_SEARCH", 6, 1, 20)
 
 
+def search_expand_queries() -> bool:
+    """Sharpen planner queries with autocomplete suggestions. Default on.
+
+    Each expansion is one cached autocomplete call; failures keep the
+    original query, so this can never break planning.
+    """
+    return _bool("SEARCH_EXPAND_QUERIES", True)
+
+
+def scholar_forward_max() -> int:
+    """Highly-cited papers chased forward for citing documents per run."""
+    return _int("SCHOLAR_FORWARD_MAX", 2, 0, 10)
+
+
 def search_blocked_hosts() -> tuple[str, ...]:
     """Hosts never kept from web/news results, comma-separated in env.
 

@@ -20,6 +20,15 @@ except ImportError:  # pragma: no cover - openai ships with litellm
 
 log = logging.getLogger(__name__)
 
+# Shared anti-hallucination rule, prepended to every prompt that processes
+# collected material. Deliberately short (~60 tokens): it rides along on
+# calls that already send kilobytes of evidence, instead of duplicating the
+# longer per-section discipline blocks.
+GROUNDING = """HARD RULE: use ONLY the material given in this prompt. Never add facts,
+numbers, names, or URLs from your own knowledge. If the material does not
+support a point, say it is not established. An unsupported sentence is a
+failure, no matter how plausible it reads."""
+
 # Verified reachable on 2026-10-04. Any litellm model string works, but it must
 # carry a provider prefix and the matching provider key must be present.
 # The default mirrors LLM_MODEL so an unset env var does not silently put a
@@ -631,6 +640,29 @@ def _mock(kind: str, user: str, json_mode: bool):
     return _mock_reply(kind, user, json_mode)
 
 
+def _loads_json(text: str):
+    """Parse model JSON, salvaging common model-output defects.
+
+    Models wrap payloads in prose, trail commas, or get cut off mid-stream.
+    Each repair is tried in order; if nothing parses, the last decoder error
+    propagates so callers never receive a half-object silently.
+    """
+    candidates = [text or ""]
+    start, end = candidates[0].find("{"), candidates[0].rfind("}")
+    if 0 <= start < end:
+        span = candidates[0][start:end + 1]
+        candidates.append(span)
+        candidates.append(re.sub(r",\s*([}\]])", r"\1", span))
+    last: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last = exc
+    assert last is not None
+    raise last
+
+
 def _approx_tokens(system: str, user: str) -> int:
     """Cheap prompt-size estimate, used only to compare against learned limits."""
     return int((len(system) + len(user)) / CHARS_PER_TOKEN)
@@ -710,7 +742,21 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default",
                     )
                 out = r.choices[0].message.content
                 _clear_cooldown(model)
-                return json.loads(out) if json_mode else out
+                if not json_mode:
+                    return out
+                try:
+                    return _loads_json(out)
+                except json.JSONDecodeError as exc:
+                    # Unparsable output is a per-model sampling failure: move
+                    # to the next model rather than retrying the same prompt
+                    # or collapsing the stage on a raw decoder traceback.
+                    last = exc
+                    notice = _advance_notice(model, index, total, chain,
+                                             "returned invalid JSON")
+                    log.warning("llm %s | attempt %d/%d | %s", model, attempt,
+                                attempts, notice)
+                    fail_kinds.append("hard")
+                    break
 
             except litellm.RateLimitError as exc:
                 # Never retry a rate-limited model: the same request would fail

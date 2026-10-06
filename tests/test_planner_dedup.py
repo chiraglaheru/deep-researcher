@@ -294,3 +294,20 @@ def test_analyse_does_not_re_extract_when_nothing_is_new(monkeypatch):
 
     assert out["extracted"] == []
     assert any("no new or improved sources" in n for n in out["notes"])
+
+
+def test_make_plan_falls_back_when_the_model_fails(monkeypatch):
+    """A dead planner must degrade to a generic plan, not kill the run."""
+    import backend.research.planner as planner_module
+
+    monkeypatch.setattr(planner_module, "ask",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("all models failed")))
+
+    plan = make_plan("Compare Mistral Large 2 and Llama 3 for inference.")
+
+    subs = plan["subquestions"]
+    assert len(subs) == 1
+    sources = {s["source"] for s in subs[0]["searches"]}
+    assert sources == {"web", "news"}
+    assert all(s["query"] for s in subs[0]["searches"])

@@ -15,9 +15,12 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date
 
 from . import config
 from .chunker import Chunk
+
+_THIS_YEAR = date.today().year
 
 _STOPWORDS = frozenset("""
 a about above after again against all am an and any are aren as at be because been
@@ -49,6 +52,44 @@ _NUMBER = re.compile(
 )
 
 _SPLIT_DIMENSIONS = re.compile(r",|\band\b|\bplus\b|;|/")
+
+# Knowledge-graph types that are almost never research material for technical
+# questions: a passage carrying an entity typed as one of these is the wrong
+# "Attention" (song, film, product), not the mechanism being researched.
+_WRONG_ENTITY_TYPES = ("song", "film", "movie", "tv series", "video game",
+                       "product", "album", "novel")
+
+# Question words signalling that recent evidence outranks older evidence.
+_RECENCY_TERMS = frozenset({"latest", "recent", "current", "update", "updated",
+                            "now", "today", "newest"})
+
+
+def _publication_year(value: str | None) -> int | None:
+    match = re.search(r"(19|20)\d{2}", str(value or ""))
+    return int(match.group()) if match else None
+
+
+def uncovered_questions(bank: list[str], records, limit: int = 5) -> list[str]:
+    """Related questions with little overlap against extracted evidence.
+
+    The bank comes free with every web search (People Also Ask / related
+    searches). Anything already covered by findings is dropped, so recovery
+    targets genuine gaps instead of re-asking answered questions.
+    """
+    covered: set[str] = set()
+    for record in records or []:
+        covered |= set(terms(f"{record.claim} {record.detail} "
+                             f"{record.dimension}"))
+    out: list[str] = []
+    for question in bank or []:
+        words = set(terms(question))
+        if not words or question in out:
+            continue
+        if len(words & covered) / len(words) < 0.4:
+            out.append(question)
+        if len(out) >= limit:
+            break
+    return out
 
 
 @dataclass
@@ -298,6 +339,21 @@ def rank(chunks: list[Chunk], question: str, plan: dict | None = None,
             score *= 0.55
         elif chunk.retrieval_status == "full":
             score *= 1.08
+
+        entity_type = (chunk.entity_type or "").lower()
+        if entity_type and any(wrong in entity_type for wrong in _WRONG_ENTITY_TYPES):
+            # The search engine itself typed this source's entity as media, not
+            # material: downrank hard so song lyrics never outrank benchmarks.
+            score *= 0.3
+            reasons.append(f"entity typed as {chunk.entity_type}")
+
+        if (query_terms & _RECENCY_TERMS
+                or str(_THIS_YEAR) in question or str(_THIS_YEAR - 1) in question):
+            # "latest"/"recent" questions must not be answered with old pages.
+            year = _publication_year(chunk.publication_date)
+            if year is not None and year >= _THIS_YEAR - 1:
+                score *= 1.15
+                reasons.append("recently published")
 
         scored.append(Scored(chunk, score, reasons))
 

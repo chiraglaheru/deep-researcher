@@ -46,7 +46,7 @@
 
                 <textarea
                     id="question"
-                    placeholder="What do you want to research?"
+                    placeholder="What's on your mind?"
                     required
                 ></textarea>
 
@@ -98,6 +98,112 @@
             </div>
 
 
+            <!-- Live research progress -->
+
+            <div class="card progress-card" id="progress-card">
+
+                <h4>Research progress</h4>
+
+                <ol class="progress-list" id="progress-list">
+                    <li class="progress-step" data-step="plan">
+                        <span class="progress-icon" aria-hidden="true"></span>
+                        <div class="progress-body">
+                            <strong>Planned the question</strong>
+                            <small id="prog-plan-detail">Waiting…</small>
+                        </div>
+                    </li>
+                    <li class="progress-step" data-step="search">
+                        <span class="progress-icon" aria-hidden="true"></span>
+                        <div class="progress-body">
+                            <strong id="prog-search-title">Searched 0 queries</strong>
+                            <small id="prog-search-detail">Waiting for the first results…</small>
+                            <div class="plan-sources" id="prog-search-sources"></div>
+                        </div>
+                    </li>
+                    <li class="progress-step" data-step="read">
+                        <span class="progress-icon" aria-hidden="true"></span>
+                        <div class="progress-body">
+                            <strong id="prog-read-title">Read 0 pages</strong>
+                            <small id="prog-read-detail">Waiting for downloads…</small>
+                        </div>
+                    </li>
+                    <li class="progress-step hidden" data-step="gap">
+                        <span class="progress-icon" aria-hidden="true"></span>
+                        <div class="progress-body">
+                            <strong>Found a gap</strong>
+                            <small id="prog-gap-detail"></small>
+                        </div>
+                    </li>
+                    <li class="progress-step" data-step="write">
+                        <span class="progress-icon" aria-hidden="true"></span>
+                        <div class="progress-body">
+                            <strong>Writing the report</strong>
+                            <small id="prog-write-detail">Waiting for sections…</small>
+                        </div>
+                    </li>
+                </ol>
+
+            </div>
+
+
+            <!-- Tabbed results navigation -->
+
+            <div class="tabs" role="tablist" aria-label="Results views">
+                <button type="button" class="tab is-active" role="tab"
+                    id="tab-report" aria-selected="true" aria-controls="panel-report"
+                    data-tab="report">Report</button>
+                <button type="button" class="tab" role="tab"
+                    id="tab-sources" aria-selected="false" aria-controls="panel-sources"
+                    data-tab="sources">Sources (<span id="sources-count">0</span>)</button>
+                <button type="button" class="tab" role="tab"
+                    id="tab-method" aria-selected="false" aria-controls="panel-method"
+                    data-tab="method">How it was researched</button>
+            </div>
+
+            <div class="tab-panel is-active" id="panel-report" role="tabpanel"
+                aria-labelledby="tab-report" tabindex="0">
+
+            <!-- Final Report -->
+
+            <div class="card report-card">
+
+                <div id="status-banner" class="status-banner hidden"></div>
+
+                <ul id="status-missing" class="status-missing hidden"></ul>
+
+                <div class="report-toolbar">
+                    <div class="report-label" id="report-label">
+                        FINAL REPORT
+                    </div>
+
+                    <div class="report-actions">
+                        <span id="report-words" class="stat"></span>
+                        <button
+                            id="download-button"
+                            type="button"
+                            class="ghost-button hidden"
+                        >
+                            Download .md
+                        </button>
+                        <button
+                            id="copy-button"
+                            type="button"
+                            class="ghost-button hidden"
+                        >
+                            Copy markdown
+                        </button>
+                    </div>
+                </div>
+
+                <div id="report" class="report"></div>
+
+            </div>
+
+            </div>
+
+            <div class="tab-panel" id="panel-sources" role="tabpanel"
+                aria-labelledby="tab-sources" tabindex="0" hidden>
+
             <!-- Source Retrieval -->
 
             <div class="card" id="retrieval-card">
@@ -117,6 +223,10 @@
 
             </div>
 
+            </div>
+
+            <div class="tab-panel" id="panel-method" role="tabpanel"
+                aria-labelledby="tab-method" tabindex="0" hidden>
 
             <!-- Evidence Extraction -->
 
@@ -175,41 +285,6 @@
                 <div id="contradictions"></div>
 
             </div>
-
-
-            <!-- Final Report -->
-
-            <div class="card report-card">
-
-                <div id="status-banner" class="status-banner hidden"></div>
-
-                <ul id="status-missing" class="status-missing hidden"></ul>
-
-                <div class="report-toolbar">
-                    <div class="report-label" id="report-label">
-                        FINAL REPORT
-                    </div>
-
-                    <div class="report-actions">
-                        <span id="report-words" class="stat"></span>
-                        <button
-                            id="download-button"
-                            type="button"
-                            class="ghost-button hidden"
-                        >
-                            Download .md
-                        </button>
-                        <button
-                            id="copy-button"
-                            type="button"
-                            class="ghost-button hidden"
-                        >
-                            Copy markdown
-                        </button>
-                    </div>
-                </div>
-
-                <div id="report" class="report"></div>
 
             </div>
 

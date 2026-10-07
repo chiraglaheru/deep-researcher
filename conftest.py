@@ -34,6 +34,10 @@ def clean_env(monkeypatch, request, tmp_path):
     """
     if request.node.get_closest_marker("live") is None:
         monkeypatch.delenv("SERPAPI_KEY", raising=False)
+        # Paid extraction fallbacks: a real key in the ambient env would let
+        # an offline test make real, billed network calls.
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     # Mock mode is opt-in; an ambient LLM_MOCK/SEARCH_MOCK would silently turn
     # real requests into canned data and make a run look like it passed.

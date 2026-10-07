@@ -19,14 +19,24 @@ import datetime
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from . import config
 
 _write_lock = threading.Lock()
 # Remembers the most recent export per question so /api/report/download can
-# serve it without the client having to pass a path.
-_last: dict[str, dict] = {}
+# serve it without the client having to pass a path. Bounded like runlog:
+# a long-lived server must not grow this without limit.
+_KEEP_EXPORTS = 16
+_last: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _remember(key: str, meta: dict) -> None:
+    _last[key] = meta
+    _last.move_to_end(key)
+    while len(_last) > _KEEP_EXPORTS:
+        _last.popitem(last=False)
 
 
 def slugify(text: str, limit: int = 70) -> str:
@@ -76,7 +86,8 @@ def save(question: str, report: str, stats: dict | None = None,
 
     if not config.export_enabled():
         meta = {"written": False, "reason": "export disabled", "filename": filename}
-        _last[_key(question)] = meta
+        with _write_lock:
+            _remember(_key(question), meta)
         return meta
 
     content = build_document(question, report, stats, retrieval)
@@ -92,7 +103,8 @@ def save(question: str, report: str, stats: dict | None = None,
     except OSError as exc:
         meta.update(reason=f"could not write file: {exc}")
 
-    _last[_key(question)] = meta
+    with _write_lock:
+        _remember(_key(question), meta)
     return meta
 
 

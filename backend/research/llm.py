@@ -238,8 +238,14 @@ def _save_health_to_disk() -> None:
     try:
         from pathlib import Path as _Path
         now_wall = time.time()
-        payload = {"cooldowns": {}, "ceilings": dict(_prompt_ceilings)}
-        for model, (until_mono, reason) in _cooldowns.items():
+        # Snapshot shared state under the lock: other threads mutate these
+        # dicts mid-save, and iterating them unlocked raises RuntimeError
+        # (which the except would swallow, silently losing the persist).
+        with _health_lock:
+            cooldowns = dict(_cooldowns)
+            ceilings = dict(_prompt_ceilings)
+        payload = {"cooldowns": {}, "ceilings": ceilings}
+        for model, (until_mono, reason) in cooldowns.items():
             left = until_mono - _now()
             if left <= 0:
                 continue

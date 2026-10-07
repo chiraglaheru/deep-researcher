@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -143,10 +144,37 @@ class Fetcher:
         self.fetched = 0
         self.tavily_used = 0          # paid fallback calls, per research run
         self.firecrawl_used = 0
+        # fetch_many runs this fetcher across worker threads; every budget
+        # check-and-increment must be atomic, or parallel workers both pass
+        # a cap of 1 and overspend the run (double Tavily calls, fetch
+        # budget overshoot).
+        self._counter_lock = threading.Lock()
 
     # -- budget ------------------------------------------------------------
     def exhausted(self) -> bool:
-        return self.fetched >= self.budget
+        with self._counter_lock:
+            return self.fetched >= self.budget
+
+    def _claim_fetch(self) -> bool:
+        """Atomically reserve one fetch; False when the budget is spent."""
+        with self._counter_lock:
+            if self.fetched >= self.budget:
+                return False
+            self.fetched += 1
+            return True
+
+    def _claim_paid(self, service: str) -> bool:
+        """Atomically reserve one paid fallback call within its per-run cap."""
+        with self._counter_lock:
+            if service == "tavily":
+                if self.tavily_used >= config.tavily_max_per_run():
+                    return False
+                self.tavily_used += 1
+                return True
+            if self.firecrawl_used >= config.firecrawl_max_per_run():
+                return False
+            self.firecrawl_used += 1
+            return True
 
     # -- robots ------------------------------------------------------------
     def _allowed(self, url: str) -> tuple[bool, str]:
@@ -179,7 +207,7 @@ class Fetcher:
         timeout = config.fetch_timeout_s()
         with self.session.get(url, timeout=timeout, stream=True,
                               allow_redirects=True) as resp:
-            self.fetched += 1
+            self._claim_fetch()
             cap = config.fetch_max_bytes()
             buf = bytearray()
             for piece in resp.iter_content(64 * 1024):
@@ -212,7 +240,7 @@ class Fetcher:
             # us to slow down, not refusing us permanently.
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry = self._retry_after(resp)
-                if retry is not None:
+                if retry is not None and not self.exhausted():
                     time.sleep(retry)
                     resp = self._get(url)
                     doc.final_url = str(resp.url)
@@ -274,6 +302,8 @@ class Fetcher:
     def _fetch_copy(self, url: str, target: str) -> FetchedDoc | None:
         """Fetch an open-access copy of the original URL. None unless readable."""
         try:
+            if self.exhausted():
+                return None
             resp = self._get(target)
             if resp.status_code >= 400:
                 return None
@@ -297,17 +327,15 @@ class Fetcher:
         if service == "tavily":
             if not (os.environ.get("TAVILY_API_KEY") or "").strip():
                 return None
-            if self.tavily_used >= config.tavily_max_per_run():
+            if not self._claim_paid("tavily"):
                 return None
-            self.tavily_used += 1
             from .webextract import tavily_extract
             result = tavily_extract(url)
         else:
             if not (os.environ.get("FIRECRAWL_API_KEY") or "").strip():
                 return None
-            if self.firecrawl_used >= config.firecrawl_max_per_run():
+            if not self._claim_paid("firecrawl"):
                 return None
-            self.firecrawl_used += 1
             from .webextract import firecrawl_scrape
             result = firecrawl_scrape(url)
         if not result:

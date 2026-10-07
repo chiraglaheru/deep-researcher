@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -77,15 +78,35 @@ def _cache_path(source: str, query: str, n: int) -> Path | None:
 
 
 def _cached_run(source: str, query: str, n: int, params: dict) -> dict:
-    """Serve from SEARCH_CACHE_DIR when possible; otherwise call SerpApi."""
+    """Serve from SEARCH_CACHE_DIR when possible; otherwise call SerpApi.
+
+    Cache reads are defensive: a truncated or hand-edited file must never
+    poison every later run of the same query, so any parse failure falls
+    back to a live call. Writes go to a temp file and are atomically
+    renamed, so concurrent runs can never interleave a half-written file.
+    """
     path = _cache_path(source, query, n)
     if path is None:
         return _run(params)
     if path.is_file():
-        return json.loads(path.read_text())
+        try:
+            cached = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            log.warning("search cache unreadable for %r (%s); calling live",
+                        query[:60], type(exc).__name__)
+            cached = None
+        if isinstance(cached, dict) and cached:
+            return cached
     result = _run(params)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result))
+    if not isinstance(result, dict) or not result:
+        return result
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(result))
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("search cache write failed for %r: %s", query[:60], exc)
     return result
 
 
@@ -318,7 +339,85 @@ def _ai_overview_refs(page_token: str) -> list[dict]:
     return refs
 
 
+ARXIV_API = "http://export.arxiv.org/api/query"
+_ARXIV_NS = {"a": "http://www.w3.org/2005/Atom"}
+
+
+def _arxiv_search(query: str, n: int = 6) -> list[dict]:
+    """Search arXiv's own corpus via its free Atom API.
+
+    No SerpApi credits and every hit is fetchable full text, which is why
+    this exists as its own source rather than leaving preprints to Google
+    Scholar's indexing. Returns normalized items; [] on any failure.
+    """
+    if not (query or "").strip():
+        return []
+    params = {"search_query": f"all:{query}", "start": 0,
+              "max_results": max(1, n), "sortBy": "relevance"}
+    try:
+        text = _http_get_cached("arxiv", query, n, ARXIV_API, params)
+    except Exception as exc:
+        log.warning("arxiv search failed: %s", type(exc).__name__)
+        return []
+    if not text:
+        return []
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    items = []
+    for entry in root.findall("a:entry", _ARXIV_NS)[:n]:
+        link = ""
+        for candidate in entry.findall("a:link", _ARXIV_NS):
+            if candidate.get("rel") == "alternate" or candidate.get("type") == "text/html":
+                link = candidate.get("href", "")
+                break
+        if not link:
+            id_text = (entry.findtext("a:id", "", _ARXIV_NS) or "").strip()
+            link = id_text
+        title = " ".join((entry.findtext("a:title", "", _ARXIV_NS) or "").split())
+        summary = " ".join((entry.findtext("a:summary", "", _ARXIV_NS) or "").split())
+        published = (entry.findtext("a:published", "", _ARXIV_NS) or "")[:10]
+        authors = [a.findtext("a:name", "", _ARXIV_NS)
+                   for a in entry.findall("a:author", _ARXIV_NS)]
+        items.append(_item(title, link, summary, published, "arxiv", query,
+                           {"authors": [a for a in authors if a][:12],
+                            "pdf_url": link.replace("/abs/", "/pdf/")}))
+    return items
+
+
+def _http_get_cached(source: str, query: str, n: int,
+                     url: str, params: dict) -> str:
+    """GET a text endpoint through the same disk cache as SerpApi calls.
+
+    arXiv answers with Atom XML, so the SerpApi-shaped JSON cache does not
+    apply; this keeps its own cache keyed the same way and fails closed.
+    """
+    path = _cache_path(source, query, n)
+    if path is not None and path.is_file():
+        try:
+            return path.read_text()
+        except OSError:
+            pass
+    import requests
+    resp = requests.get(url, params=params, timeout=60,
+                        headers={"User-Agent": "deep-researcher/2.0"})
+    resp.raise_for_status()
+    text = resp.text
+    if path is not None and text:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".txt.tmp")
+            tmp.write_text(text)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return text
+
+
 def _run_search(source: str, query: str, n: int = 6) -> tuple[list[dict], dict]:
+    if source == "arxiv":
+        return _arxiv_search(query, n), {}
     if source == "news":
         rows = _cached_run(source, query, n, {"engine": "google_news", "q": query}).get("news_results", [])[:n]
         items = _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"),

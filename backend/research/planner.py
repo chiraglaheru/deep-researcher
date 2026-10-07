@@ -27,7 +27,7 @@ its of on or the their there these this to what which who why with do does did
 about across during over under
 """.split())
 
-SOURCES = ("web", "news", "scholar", "github", "patent")
+SOURCES = ("web", "news", "scholar", "github", "patent", "arxiv")
 
 SYSTEM = """You are a research planner. Break the user's question into 10-14 sub-questions.
 Sub-questions must be DISTINCT from each other: each must cover a different
@@ -43,8 +43,11 @@ technical terms. "How does X compare to Y for Z under condition W?" beats
 specific questions produce detailed ones.
 For each, give 2-3 concrete search queries and the best source for each:
 - web: docs, blogs, comparisons   - news: recent events/announcements
-- scholar: papers, benchmarks     - github: repos, issues, ecosystem activity
+- scholar: peer-reviewed papers, benchmarks
+- github: repos, issues, ecosystem activity
 - patent: patented mechanisms, filings, prior art (technical questions only)
+- arxiv: preprints and very recent methods (quantitative/technical questions
+  only; skip for law, history or other non-technical subjects)
 Return JSON only:
 {"subquestions":[{"question":"...","searches":[{"source":"web","query":"..."}]}]}
 Today's date is {today}. Include the current year in queries where recency matters.

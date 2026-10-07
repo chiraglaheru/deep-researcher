@@ -178,7 +178,7 @@ def fetch_max_sources() -> int:
 
 def fetch_max_bytes() -> int:
     """Per-document download ceiling. Bigger responses are truncated."""
-    return _int("FETCH_MAX_BYTES", 4_000_000, 10_000)
+    return _int("FETCH_MAX_BYTES", 4_000_000, 10_000, 64_000_000)
 
 
 def fetch_timeout_s() -> float:
@@ -211,7 +211,7 @@ def firecrawl_max_per_run() -> int:
 
 def fetch_max_chars() -> int:
     """Text kept from one document after cleaning."""
-    return _int("FETCH_MAX_CHARS", 400_000, 1_000)
+    return _int("FETCH_MAX_CHARS", 400_000, 1_000, 4_000_000)
 
 
 # --- chunking limits -------------------------------------------------------

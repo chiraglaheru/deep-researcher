@@ -84,7 +84,7 @@ The backend is FastAPI; the frontend is plain HTML/CSS/JS with no build step. Fa
 
 - Breaks a question into 3–5 sub-questions, each with its own searches
 - Runs every search in a source round concurrently
-- Sources: Google web, Google News, Google Scholar, GitHub and patents, all through SerpApi
+- Sources: Google web, Google News, Google Scholar, GitHub, patents via SerpApi, plus arXiv's free Atom API (no credits, full-text preprints)
 - Prefetches a Wikipedia baseline before any model sees retrieved content
 - Reads the real documents (PDFs, papers, ebooks, repos, patents) instead of summarising snippets
 - Falls back to open-access copies, then Tavily, then Firecrawl for unreadable pages

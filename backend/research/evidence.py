@@ -229,7 +229,11 @@ def dedupe(records: list[Evidence]) -> list[Evidence]:
     """Drop near-duplicate claims, keeping the best-attested one."""
     best: dict[str, Evidence] = {}
     for record in records:
-        key = re.sub(r"[^a-z0-9]+", " ", (record.claim or "").lower()).strip()[:110]
+        # Key on the FULL normalized claim, not a truncated prefix: two
+        # findings that share a long lead-in but differ in their trailing
+        # numbers or conditions are different claims, and a length cap
+        # silently merged them.
+        key = re.sub(r"[^a-z0-9]+", " ", (record.claim or "").lower()).strip()
         if not key:
             continue
         incumbent = best.get(key)

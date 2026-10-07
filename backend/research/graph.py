@@ -321,6 +321,7 @@ async def retrieve(state):
             source_type=doc.method,
             publication_date=doc.date,
             retrieval_status=doc.status,
+            retrieval_limitation=doc.limitation,
             source_publisher=doc.publisher,
             authors=doc.authors,
             doi=doc.doi,

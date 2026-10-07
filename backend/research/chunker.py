@@ -43,6 +43,7 @@ class Chunk:
     content: str = ""
     char_start: int = 0               # offset into the cleaned document
     retrieval_status: str = "full"    # full | partial | metadata_only
+    retrieval_limitation: str = ""    # why it is not a clean full read
     source_publisher: str = ""
     authors: list[str] = field(default_factory=list)
     doi: str = ""
@@ -78,6 +79,7 @@ def chunk_document(
     source_type: str = "web",
     publication_date: str = "",
     retrieval_status: str = "full",
+    retrieval_limitation: str = "",
     source_publisher: str = "",
     authors: list[str] | None = None,
     doi: str = "",
@@ -123,6 +125,7 @@ def chunk_document(
                 content=content,
                 char_start=char_start,
                 retrieval_status=retrieval_status,
+                retrieval_limitation=retrieval_limitation,
                 source_publisher=source_publisher,
                 authors=list(authors or []),
                 doi=doi,

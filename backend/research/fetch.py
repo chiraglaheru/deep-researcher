@@ -48,6 +48,8 @@ METADATA = "metadata_only"  # we only ever got the snippet/abstract
 FAILED = "failed"          # nothing usable
 
 _ARXIV_ID = re.compile(r"arxiv\.org/(?:abs|pdf)/([\w.\-/]+?)(?:v\d+)?(?:\.pdf)?$", re.I)
+_GUTENBERG_ID = re.compile(r"gutenberg\.org/(?:ebooks|files|cache/epub)/(?:pg)?(\d+)", re.I)
+_PMCID = re.compile(r"PMC\d+", re.I)
 _DOI = re.compile(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b")
 
 
@@ -139,6 +141,8 @@ class Fetcher:
                                      "Accept-Language": "en;q=0.9"})
         self.budget = config.total_fetch_budget()
         self.fetched = 0
+        self.tavily_used = 0          # paid fallback calls, per research run
+        self.firecrawl_used = 0
 
     # -- budget ------------------------------------------------------------
     def exhausted(self) -> bool:
@@ -218,11 +222,11 @@ class Fetcher:
             if resp.status_code >= 400:
                 doc.status = FAILED
                 doc.limitation = f"HTTP {resp.status_code}"
-                return doc
+                return self._with_fallback(url, doc)
 
             if not body.strip():
                 doc.status, doc.limitation = FAILED, "empty response body"
-                return doc
+                return self._with_fallback(url, doc)
 
             doc = self._dispatch(doc, body, truncated, resp)
 
@@ -232,7 +236,7 @@ class Fetcher:
                 doc.status = PARTIAL
                 doc.limitation = _join(doc.limitation,
                                        "text truncated to configured character limit")
-            return doc
+            return self._with_fallback(url, doc)
 
         except requests.Timeout:
             doc.status, doc.limitation = FAILED, "timed out"
@@ -241,7 +245,91 @@ class Fetcher:
         except Exception as exc:                      # never let one URL kill the run
             log.warning("fetch failed for %s: %s", url, exc, exc_info=True)
             doc.status, doc.limitation = FAILED, f"{type(exc).__name__}: {exc}"[:200]
+        return self._with_fallback(url, doc)
+
+    def _with_fallback(self, url: str, doc: FetchedDoc) -> FetchedDoc:
+        """Recover a failed fetch, cheapest first: open-access copy, Tavily,
+        Firecrawl. Robots-blocked URLs never reach here, so every tier stays
+        within what the site already allows us to read.
+        """
+        if doc.status != FAILED:
+            return doc
+        try:
+            from .oa import resolve_pdf_url
+            oa_url = resolve_pdf_url(url)
+        except Exception:
+            oa_url = ""
+        if oa_url:
+            recovered = self._fetch_copy(url, oa_url)
+            if recovered is not None:
+                return recovered
+        recovered = self._paid_fallback(url, "tavily")
+        if recovered is not None:
+            return recovered
+        recovered = self._paid_fallback(url, "firecrawl")
+        if recovered is not None:
+            return recovered
         return doc
+
+    def _fetch_copy(self, url: str, target: str) -> FetchedDoc | None:
+        """Fetch an open-access copy of the original URL. None unless readable."""
+        try:
+            resp = self._get(target)
+            if resp.status_code >= 400:
+                return None
+            body, truncated = self._body(resp)
+            if not body.strip():
+                return None
+            candidate = FetchedDoc(url=url)
+            candidate.final_url = str(resp.url)
+            candidate.content_type = resp.headers.get("content-type", "")
+            candidate = self._dispatch(candidate, body, truncated, resp)
+            if candidate.status != FAILED and candidate.text.strip():
+                log.info("recovered %s via open-access copy", url)
+                return candidate
+        except Exception as exc:
+            log.debug("open-access copy failed for %s: %s", url, exc)
+        return None
+
+    def _paid_fallback(self, url: str, service: str) -> FetchedDoc | None:
+        """One paid extraction attempt, respecting keys and per-run caps."""
+        import os
+        if service == "tavily":
+            if not (os.environ.get("TAVILY_API_KEY") or "").strip():
+                return None
+            if self.tavily_used >= config.tavily_max_per_run():
+                return None
+            self.tavily_used += 1
+            from .webextract import tavily_extract
+            result = tavily_extract(url)
+        else:
+            if not (os.environ.get("FIRECRAWL_API_KEY") or "").strip():
+                return None
+            if self.firecrawl_used >= config.firecrawl_max_per_run():
+                return None
+            self.firecrawl_used += 1
+            from .webextract import firecrawl_scrape
+            result = firecrawl_scrape(url)
+        if not result:
+            return None
+        title, text = result
+        return self._external_doc(url, title, text, service)
+
+    @staticmethod
+    def _external_doc(url: str, title: str, text: str, method: str) -> FetchedDoc | None:
+        cleaned = _clean(text)
+        if len(cleaned.split()) < 30:
+            return None
+        if len(cleaned) > config.fetch_max_chars():
+            cleaned = cleaned[: config.fetch_max_chars()]
+        log.info("recovered %s via %s (%d words)", url, method, len(cleaned.split()))
+        return FetchedDoc(
+            url=url, final_url=url, status=FULL, method=method,
+            title=title or urlparse(url).netloc.removeprefix("www."),
+            text=cleaned,
+            publisher=urlparse(url).netloc.removeprefix("www."),
+            limitation=f"read via {method} extraction fallback",
+        )
 
     @staticmethod
     def _retry_after(resp: requests.Response, attempts: int = 2) -> float | None:
@@ -260,6 +348,17 @@ class Fetcher:
         doc.bytes_read = len(body)
         head = body[:2048].lower()
 
+        target = doc.final_url or doc.url
+        if _GUTENBERG_ID.search(target):
+            gutenberg = self._from_gutenberg(doc)
+            if gutenberg is not None:
+                return gutenberg
+        pmcid = _PMCID.search(target)
+        if pmcid:
+            bioc = self._from_bioc(doc, pmcid.group(0).upper())
+            if bioc is not None:
+                return bioc
+
         if "application/pdf" in doc.content_type or head[:5] == b"%pdf-":
             return self._from_pdf(doc, body)
         if _ARXIV_ID.search(doc.final_url or doc.url):
@@ -272,8 +371,11 @@ class Fetcher:
             return self._from_plain(doc, body)
         if "text/html" in doc.content_type or b"<html" in head:
             doc = self._from_html(doc, body, truncated)
-            if "patents.google.com" in (doc.final_url or doc.url):
+            final = doc.final_url or doc.url
+            if "patents.google.com" in final:
                 doc.method = "patent"
+            elif "link.springer.com" in final:
+                doc.method = "springer"
             return doc
         return self._from_plain(doc, body)             # unknown type: try as text
 
@@ -414,6 +516,57 @@ class Fetcher:
             doc.limitation = "README not retrievable; repository metadata only"
         return doc
 
+    # -- gutenberg ---------------------------------------------------------
+    def _from_gutenberg(self, doc: FetchedDoc) -> FetchedDoc | None:
+        """Plain-text ebook via predictable Gutenberg URLs. None to fall through."""
+        match = _GUTENBERG_ID.search(doc.final_url or doc.url)
+        if not match:
+            return None
+        book_id = match.group(1)
+        for txt_url in (
+            f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
+            f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt",
+        ):
+            try:
+                resp = self.session.get(txt_url, timeout=config.fetch_timeout_s())
+                if resp.status_code != 200 or len(resp.text) < 500:
+                    continue
+                return _gutenberg_doc(doc, txt_url, resp.text)
+            except requests.RequestException:
+                continue
+        return None
+
+    # -- PMC BioC ----------------------------------------------------------
+    def _from_bioc(self, doc: FetchedDoc, pmcid: str) -> FetchedDoc | None:
+        """Full text as clean JSON via the PMC BioC API. None to fall through."""
+        try:
+            resp = self.session.get(
+                "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/"
+                f"pmcoa.cgi/BioC_json/{pmcid}/unicode",
+                timeout=config.fetch_timeout_s())
+            if resp.status_code != 200:
+                return None
+            data = json.loads(resp.text)
+        except (requests.RequestException, ValueError):
+            return None
+        parts = []
+        for document in data.get("documents") or []:
+            for passage in document.get("passages") or []:
+                section = ((passage.get("infons") or {}).get("section_type") or "")
+                text = (passage.get("text") or "").strip()
+                if not text:
+                    continue
+                parts.append(f"## {section}\n\n{text}" if section else text)
+        text = _clean("\n\n".join(parts))
+        if len(text.split()) < 50:
+            return None
+        doc.final_url = doc.final_url or doc.url
+        doc.method = "pmc"
+        doc.publisher = "PubMed Central"
+        doc.text = text
+        doc.status = FULL
+        return doc
+
     def _github_readme(self, owner: str, repo: str) -> str:
         headers = {"Accept": "application/vnd.github.raw"}
         token = _github_token()
@@ -528,6 +681,30 @@ def snippet_only_doc(result: dict, reason: str = "") -> FetchedDoc:
 
 
 # --- helpers ---------------------------------------------------------------
+
+_GUTENBERG_START = re.compile(
+    r"\*\*\* START OF (?:THIS|THE) PROJECT GUTENBERG EBOOK.*?\*\*\*", re.S | re.I)
+_GUTENBERG_END = re.compile(
+    r"\*\*\* END OF (?:THIS|THE) PROJECT GUTENBERG EBOOK.*?\*\*\*", re.S | re.I)
+
+
+def _gutenberg_doc(doc, txt_url: str, raw: str):
+    """Strip Project Gutenberg boilerplate; parse title/author from its header."""
+    title, authors = "", []
+    for line in raw[:3000].splitlines():
+        if line.startswith("Title:"):
+            title = line.split(":", 1)[1].strip()[:200]
+        elif line.startswith("Author:"):
+            authors = [a.strip() for a in line.split(":", 1)[1].split(",")][:6]
+    start = _GUTENBERG_START.search(raw)
+    text = raw[start.end():] if start else raw
+    end = _GUTENBERG_END.search(text)
+    text = text[:end.start()] if end else text
+    return FetchedDoc(
+        url=doc.url, final_url=txt_url, status=FULL, method="gutenberg",
+        title=title or doc.url, text=_clean(text),
+        publisher="Project Gutenberg", authors=authors,
+    )
 
 def _structured_text(root) -> str:
     """Render a content subtree as text that still carries its heading structure.

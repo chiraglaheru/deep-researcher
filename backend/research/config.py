@@ -190,6 +190,16 @@ def fetch_respect_robots() -> bool:
     return _bool("FETCH_RESPECT_ROBOTS", True)
 
 
+def tavily_max_per_run() -> int:
+    """Paid Tavily fallback pages per research run. 0 disables it."""
+    return _int("TAVILY_MAX_PER_RUN", 10, 0, 200)
+
+
+def firecrawl_max_per_run() -> int:
+    """Paid Firecrawl fallback pages per research run. 0 disables it."""
+    return _int("FIRECRAWL_MAX_PER_RUN", 4, 0, 200)
+
+
 def fetch_max_chars() -> int:
     """Text kept from one document after cleaning."""
     return _int("FETCH_MAX_CHARS", 400_000, 1_000)

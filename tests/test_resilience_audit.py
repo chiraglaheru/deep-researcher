@@ -33,8 +33,8 @@ def test_full_ranking_fits_inside_max_batches():
 
 
 def test_budget_estimate_covers_small_batches():
-    """The auto budget must reflect ~16 extraction batches, not the old ~8."""
-    assert config.budget_estimate(2) >= 53
+    """The auto budget must reflect ~35 extraction batches, not the old ~8."""
+    assert config.budget_estimate(2) >= 145
     assert config.total_llm_budget(2) >= config.budget_estimate(2)
 
 

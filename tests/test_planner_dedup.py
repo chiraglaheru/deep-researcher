@@ -311,3 +311,25 @@ def test_make_plan_falls_back_when_the_model_fails(monkeypatch):
     sources = {s["source"] for s in subs[0]["searches"]}
     assert sources == {"web", "news"}
     assert all(s["query"] for s in subs[0]["searches"])
+
+
+def test_make_plan_preserves_long_elaborated_subquestions(monkeypatch):
+    """Elaboration must survive the pipeline: no truncation anywhere."""
+    import backend.research.planner as planner_module
+
+    long_q = ("How does Mistral Large 2 compare to Llama 3 for batch inference "
+              "throughput under high-concurrency serving conditions in 2026?")
+    monkeypatch.setattr(planner_module, "ask", lambda *a, **k: {"subquestions": [
+        {"question": long_q, "searches": [
+            {"source": "web", "query": "Mistral Large 2 batch inference throughput"}]}]})
+
+    plan = make_plan("Compare Mistral Large 2 and Llama 3.")
+
+    assert plan["subquestions"][0]["question"] == long_q
+
+
+def test_planner_prompts_license_elaboration():
+    import backend.research.planner as planner_module
+
+    assert "DEEPER AND LONGER" in planner_module.SYSTEM
+    assert "elaborate" in planner_module.REGEN_SYSTEM.lower()

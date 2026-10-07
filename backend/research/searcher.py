@@ -3,20 +3,61 @@ Uses the `google-search-results` package (import name: serpapi.GoogleSearch)."""
 import datetime
 import hashlib
 import json
+import logging
 import os
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+log = logging.getLogger(__name__)
+
+
+def _search_timeout_s() -> float:
+    """Hard ceiling per SerpApi call. Env-overridable, independent of fetch."""
+    try:
+        return max(1.0, float(os.environ.get("SEARCH_TIMEOUT_S", 60.0)))
+    except (TypeError, ValueError):
+        return 60.0
 
 
 def _run(params: dict) -> dict:
     from serpapi import GoogleSearch
     params = {**params, "api_key": os.environ["SERPAPI_KEY"]}
-    r = GoogleSearch(params).get_dict()
+    r = _call_with_timeout(params, _search_timeout_s())
     err = r.get("error")
     if err and "hasn't returned any results" not in err:
         raise RuntimeError(f"SerpApi: {err}")
     return r
+
+
+def _call_with_timeout(params: dict, timeout: float) -> dict:
+    """Run one SerpApi call with a hard ceiling.
+
+    The client sets no timeout of its own, and the graph waits for every
+    parallel search before moving on -- so one hung socket used to freeze
+    the whole run at the search step with no error and no event. Daemon
+    thread, so the abandoned socket can never hold up process shutdown.
+    """
+    from serpapi import GoogleSearch
+    outcome: dict = {}
+
+    def target():
+        try:
+            outcome["result"] = GoogleSearch(params).get_dict()
+        except BaseException as exc:  # noqa: BLE001 -- re-raised below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        log.warning("SerpApi: no response within %.0fs; failing this search "
+                    "instead of stalling the run", timeout)
+        raise TimeoutError(f"SerpApi: timed out after {timeout:.0f}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result", {})
 
 
 def _cache_path(source: str, query: str, n: int) -> Path | None:
@@ -247,6 +288,36 @@ def _knowledge_meta(resp: dict) -> dict:
     return meta
 
 
+def _ai_overview_refs(page_token: str) -> list[dict]:
+    """Reference links from a full AI Overview, or [] on any failure.
+
+    The page token expires within a minute, so this is fetched immediately
+    (never cached) inside the search's own throttle slot. Only links are
+    kept: the generated prose never enters the pipeline.
+
+    Deliberately takes NO inner throttle slot: this always runs inside the
+    outer search slot, and the shared semaphore is non-reentrant -- a second
+    acquire on the same thread with max_concurrent=1 would hang forever.
+    """
+    if not page_token:
+        return []
+    try:
+        resp = _run({"engine": "google_ai_overview",
+                     "page_token": page_token})
+    except Exception:
+        return []
+    refs = []
+    overview = resp.get("ai_overview") or resp
+    for entry in (overview.get("references") or [])[:6]:
+        if not isinstance(entry, dict):
+            continue
+        link = (entry.get("link") or "").strip()
+        if link:
+            refs.append({"title": (entry.get("title") or "").strip()[:200],
+                         "link": link})
+    return refs
+
+
 def _run_search(source: str, query: str, n: int = 6) -> tuple[list[dict], dict]:
     if source == "news":
         rows = _cached_run(source, query, n, {"engine": "google_news", "q": query}).get("news_results", [])[:n]
@@ -266,6 +337,13 @@ def _run_search(source: str, query: str, n: int = 6) -> tuple[list[dict], dict]:
     rows = resp.get("organic_results", [])[:n]
     items = _drop_blocked([_item(x.get("title"), x.get("link"), x.get("snippet"), x.get("date"), source, query) for x in rows], source)
     meta = _knowledge_meta(resp)
+    token = ((resp.get("ai_overview") or {}).get("page_token") or "")
+    if token:
+        from . import config as _config
+        if _config.ai_overview_enabled():
+            refs = _ai_overview_refs(token)
+            if refs:
+                meta["ai_overview_refs"] = refs
     graph = meta.get("knowledge_graph") or {}
     if graph:
         for row in items:

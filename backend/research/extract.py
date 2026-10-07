@@ -313,13 +313,14 @@ def _harvest(reply, batch: list[Scored],
 def synthesise_sources(
     records: list[Evidence],
     budget=None,
-    sources_per_call: int = 4,
 ) -> dict[str, dict]:
-    """Per-source synthesis, several sources per call.
+    """Per-source synthesis, one honest call per source.
 
     Answers, for each source, what it actually supports and what a reader might
     wrongly assume it supports -- the difference the report needs in order not
-    to over-claim on a source's behalf.
+    to over-claim on a source's behalf. Each call covers exactly one source so
+    the reply can only ever be attributed to the source it assessed; batching
+    several sources into one prompt silently dropped all but the first.
     """
     if not records:
         return {}
@@ -329,29 +330,24 @@ def synthesise_sources(
         grouped.setdefault(record.source_id or record.source_url, []).append(record)
 
     out: dict[str, dict] = {}
-    items = list(grouped.items())
 
-    for start in range(0, len(items), sources_per_call):
-        if budget is not None and not budget.take(1):
-            log.info("source synthesis truncated: budget exhausted")
-            break
+    for source_id, group_records in grouped.items():
         # Low-value work is skipped, not paid for: a source whose findings are
         # all weak or worse contributes no assessable weight, so synthesising
         # it would spend quota without improving the report.
-        group = [(sid, recs) for sid, recs in items[start:start + sources_per_call]
-                 if any(r.quality in ("strong", "moderate") for r in recs)]
-        if not group:
-            log.info("source synthesis skipped a weak-only group")
+        if not any(r.quality in ("strong", "moderate") for r in group_records):
+            log.info("source synthesis skipped weak-only source %s", source_id)
             continue
-        payload_parts = []
-        for source_id, group_records in group:
-            head = group_records[0]
-            payload_parts.append(
-                f"\n=== SOURCE {source_id} ===\n{head.citation}\n{head.usable_url}\n"
-                + "\n".join(f"  {r.to_prompt()}" for r in group_records[:14])
-            )
+        if budget is not None and not budget.take(1):
+            log.info("source synthesis truncated: budget exhausted")
+            break
+        head = group_records[0]
+        payload = (
+            f"\n=== SOURCE {source_id} ===\n{head.citation}\n{head.usable_url}\n"
+            + "\n".join(f"  {r.to_prompt()}" for r in group_records[:14])
+        )
         try:
-            reply = ask(SYNTH_SYSTEM, "\n".join(payload_parts), json_mode=True, role="synth")
+            reply = ask(SYNTH_SYSTEM, payload, json_mode=True, role="synth")
         except LLMChainError as exc:
             log.warning("source synthesis failed: %s", exc)
             continue
@@ -359,17 +355,14 @@ def synthesise_sources(
             log.warning("source synthesis errored: %s", exc)
             continue
 
-        if isinstance(reply, dict):
-            for source_id, _ in group:
-                if isinstance(reply.get("summary"), str):
-                    out[source_id] = {
-                        "summary": reply["summary"][:900],
-                        "supports": _str_list(reply.get("supports"))[:8],
-                        "does_not_support": _str_list(reply.get("does_not_support"))[:6],
-                        "weight": normalise_quality(reply.get("weight")),
-                        "caveats": str(reply.get("caveats") or "")[:400],
-                    }
-                    break
+        if isinstance(reply, dict) and isinstance(reply.get("summary"), str):
+            out[source_id] = {
+                "summary": reply["summary"][:900],
+                "supports": _str_list(reply.get("supports"))[:8],
+                "does_not_support": _str_list(reply.get("does_not_support"))[:6],
+                "weight": normalise_quality(reply.get("weight")),
+                "caveats": str(reply.get("caveats") or "")[:400],
+            }
     return out
 
 

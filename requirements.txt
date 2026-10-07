@@ -19,3 +19,7 @@ lxml
 
 # PDF full-text extraction (papers, benchmark reports)
 pypdf
+
+# Dynamic "Save PDF" report export (reportlab Platypus layout only;
+# no Pillow needed: fractions render as compact superscript/subscript)
+reportlab

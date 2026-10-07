@@ -217,6 +217,44 @@ async def report_markdown(q: str):
     return {"markdown": content}
 
 
+@app.get("/api/report/pdf")
+async def report_pdf(q: str, rounds: int = 2, throttle: int = -1):
+    """Styled PDF of the most recent completed run for a question.
+
+    Built deterministically from the recorded run bundle (the same payloads
+    the frontend received), so the PDF mirrors what was displayed. 404 when
+    no completed run exists for the question. ``rounds``/``throttle`` are
+    display-only labels for the run-overview table.
+    """
+    import asyncio as _asyncio
+
+    from backend.research import runlog
+    from backend.research.export import slugify
+    from backend.research.pdf_report import build_pdf
+
+    bundle = runlog.get(q)
+    if bundle is None:
+        raise HTTPException(status_code=404,
+                            detail="no completed report found for this question; "
+                                   "run research first")
+    rounds_label = f"{max(1, rounds)} round{'s' if max(1, rounds) != 1 else ''}"
+    throttle_label = ("throttled" if throttle else "unthrottled") \
+        if throttle >= 0 else ""
+    try:
+        pdf = await _asyncio.to_thread(build_pdf, bundle,
+                                       rounds_label, throttle_label)
+    except Exception as exc:
+        log.warning("PDF build failed for %r: %s", q[:80], exc)
+        raise HTTPException(status_code=500,
+                            detail="could not build the PDF for this report")
+    filename = f"{slugify(q)}.pdf"
+    return StreamingResponse(
+        iter([pdf]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _exports_dir() -> Path:
     from backend.research.export import output_dir
     return output_dir()

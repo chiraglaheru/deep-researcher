@@ -339,6 +339,16 @@ that would rather render it themselves. Generated files are also browsable at
 A browser cannot write to the user's disk, so the server writes the file and
 serves it back. Nothing here tries to work around browser restrictions.
 
+### `GET /api/report/pdf?q=…`
+
+Compiles the most recent completed run for the question into a styled PDF
+(navy cover band, run-overview tiles, report sections, evidence table,
+regrouped sources, reference cards with tappable citations) and serves it as
+a download. Built deterministically from the recorded run bundle — the same
+payloads the frontend received — so the PDF mirrors what was displayed. 404
+when no completed run exists. The frontend's **Save PDF** button calls this
+endpoint with the current question, depth and pacing for the overview table.
+
 ### Health and model inventory
 
 - `GET /health` and `GET /api/health` return `{"status": "ok"}` for uptime monitors and load balancers.

@@ -1,7 +1,11 @@
 """Evidence layer: dedupe, date/freshness, contradiction detection."""
-import datetime, re
+import datetime
+import logging
+import re
 from urllib.parse import urlparse
 from .llm import ask
+
+log = logging.getLogger(__name__)
 
 THIS_YEAR = datetime.date.today().year
 
@@ -56,5 +60,12 @@ class Collector:
     def find_contradictions(self):
         if len(self.items) < 2:
             return []
-        out = ask(CONTRA_SYS, self.context(), json_mode=True, role="judge")
-        return out.get("contradictions", [])
+        try:
+            out = ask(CONTRA_SYS, self.context(), json_mode=True, role="judge")
+        except Exception as exc:
+            log.warning("contradiction fallback failed: %s", type(exc).__name__)
+            return []
+        if not isinstance(out, dict):
+            return []
+        found = out.get("contradictions", [])
+        return found if isinstance(found, list) else []

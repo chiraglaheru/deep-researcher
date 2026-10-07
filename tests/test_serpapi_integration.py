@@ -7,6 +7,8 @@ chasing. All SerpApi I/O is faked at the cache layer; no credits spent.
 """
 import asyncio
 
+import pytest
+
 from backend.research import searcher
 from backend.research import relevance
 
@@ -253,3 +255,79 @@ def test_gap_check_surfaces_unanswered_questions(monkeypatch):
     asyncio.run(graph_module.gap_check(state))
 
     assert any("ASKED ELSEWHERE BUT UNANSWERED HERE" in p for p in prompts)
+
+
+def test_hung_serpapi_fails_loudly_instead_of_freezing(monkeypatch):
+    """A hung SerpApi socket must time out: the graph waits for EVERY
+    parallel search before collect, so one hung call used to freeze the run
+    at the search step with no error and no event."""
+    import time
+
+    import serpapi
+
+    class HangingSearch:
+        def __init__(self, params):
+            pass
+
+        def get_dict(self):
+            time.sleep(30)
+            return {"organic_results": []}
+
+    monkeypatch.setattr(serpapi, "GoogleSearch", HangingSearch)
+    monkeypatch.setenv("SEARCH_TIMEOUT_S", "0.2")
+    monkeypatch.setenv("SERPAPI_KEY", "test-key")
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        searcher._run({"engine": "google", "q": "anything"})
+
+
+def test_timed_out_search_becomes_a_failed_entry_not_a_stall(monkeypatch):
+    import asyncio
+
+    from backend.research import graph as graph_module
+
+    def boom(source, query, n=6):
+        raise TimeoutError("SerpApi: timed out after 60s")
+
+    monkeypatch.setattr(graph_module, "search_full", boom)
+
+    update = asyncio.run(graph_module.search_worker(
+        {"source": "web", "query": "q"}))
+
+    assert update["raw"] == []
+    assert "timed out" in update["log"][0]["error"]
+    assert update["log"][0]["count"] == 0
+
+
+def test_overview_fetch_takes_no_inner_throttle_slot(monkeypatch):
+    """Nested search-throttle slots deadlock with max_concurrent=1.
+
+    The overview fetch must ride the outer search slot, never take its own:
+    with search throttling on and a single permit, a second acquire on the
+    same thread would hang the search forever.
+    """
+    from backend.research import throttle as throttle_module
+
+    monkeypatch.setenv("THROTTLE_SEARCH", "1")
+    monkeypatch.setenv("THROTTLE_SEARCH_MAX_CONCURRENT", "1")
+    monkeypatch.setenv("THROTTLE_SEARCH_PER_MINUTE", "6000")
+    throttle_module.reset_all()
+
+    def fake_cache(source, query, n, params):
+        return {"organic_results": [],
+                "ai_overview": {"page_token": "TOKEN123"}}
+
+    def fake_run(params):
+        return {"ai_overview": {"references": [
+            {"title": "Paper", "link": "https://paper.dev/1"}]}}
+
+    monkeypatch.setattr(searcher, "_cached_run", fake_cache)
+    monkeypatch.setattr(searcher, "_run", fake_run)
+
+    # Pre-fix this hung forever: the inner slot re-acquired the single
+    # permit already held by the outer search slot on the same thread.
+    items, meta = searcher.search_full("web", "some question")
+
+    assert meta["ai_overview_refs"] == [{"title": "Paper",
+                                         "link": "https://paper.dev/1"}]
+    throttle_module.reset_all()

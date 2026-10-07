@@ -131,7 +131,7 @@ def targets(question: str, limit: int = 8) -> list[str]:
     return out
 
 
-def dimensions(question: str, limit: int = 10) -> list[str]:
+def dimensions(question: str, limit: int = 16) -> list[str]:
     """The aspects to analyse: "performance, app size, hiring demand".
 
     These decide which sections the final report needs, so they are read from

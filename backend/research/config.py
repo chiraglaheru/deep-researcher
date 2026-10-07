@@ -77,7 +77,7 @@ def model_health_path() -> str:
 
 def max_sources() -> int:
     """Distinct sources kept after dedupe, across all searches."""
-    return _int("RESEARCH_MAX_SOURCES", 30, 1, 200)
+    return _int("RESEARCH_MAX_SOURCES", 120, 1, 1000)
 
 
 def plan_dedup_threshold() -> float:
@@ -112,6 +112,15 @@ def analyse_reuse_sources() -> bool:
     retrieval grade improves, which happens when a later fetch finally succeeds.
     """
     return _bool("ANALYSE_REUSE_SOURCES", True)
+
+
+def ai_overview_enabled() -> bool:
+    """Fetch full AI Overviews for reference links. Default on.
+
+    Only reference URLs are kept -- the generated prose never enters
+    evidence. Costs one extra search per google response carrying one.
+    """
+    return _bool("AI_OVERVIEW_ENABLED", True)
 
 
 def results_per_search() -> int:
@@ -164,7 +173,7 @@ def max_rounds() -> int:
 
 def fetch_max_sources() -> int:
     """How many sources we actually attempt to download."""
-    return _int("FETCH_MAX_SOURCES", 22, 0, 100)
+    return _int("FETCH_MAX_SOURCES", 80, 0, 500)
 
 
 def fetch_max_bytes() -> int:
@@ -177,7 +186,7 @@ def fetch_timeout_s() -> float:
 
 
 def fetch_max_workers() -> int:
-    return _int("FETCH_MAX_WORKERS", 6, 1, 24)
+    return _int("FETCH_MAX_WORKERS", 10, 1, 64)
 
 
 def fetch_max_pages() -> int:
@@ -217,14 +226,14 @@ def chunk_max_chars() -> int:
 
 def chunks_per_source() -> int:
     """Cap on chunks kept per source, so one long doc cannot dominate."""
-    return _int("CHUNKS_PER_SOURCE", 6, 1, 60)
+    return _int("CHUNKS_PER_SOURCE", 8, 1, 60)
 
 
 # --- relevance + extraction ------------------------------------------------
 
 def relevance_top_chunks() -> int:
     """Chunks that survive deterministic relevance scoring."""
-    return _int("RELEVANCE_TOP_CHUNKS", 70, 4, 2000)
+    return _int("RELEVANCE_TOP_CHUNKS", 150, 4, 2000)
 
 
 def relevance_min_score() -> float:
@@ -238,12 +247,12 @@ def extract_batch_chars() -> int:
 
 def extract_max_batches() -> int:
     """Hard ceiling on extraction calls, whatever the evidence volume."""
-    return _int("EXTRACT_MAX_BATCHES", 20, 1, 200)
+    return _int("EXTRACT_MAX_BATCHES", 40, 1, 200)
 
 
 def max_evidence_records() -> int:
     """Cap on structured evidence kept for the report."""
-    return _int("MAX_EVIDENCE_RECORDS", 160, 4, 2000)
+    return _int("MAX_EVIDENCE_RECORDS", 400, 4, 2000)
 
 
 # --- reference discovery ---------------------------------------------------
@@ -285,7 +294,7 @@ def report_min_words() -> int:
 
 def report_max_sections() -> int:
     """Cap on generated body sections, to bound the writing calls."""
-    return _int("REPORT_MAX_SECTIONS", 12, 1, 60)
+    return _int("REPORT_MAX_SECTIONS", 20, 1, 60)
 
 
 def report_evidence_per_section() -> int:
@@ -369,13 +378,13 @@ def export_enabled() -> bool:
 
 # --- global budgets (Sec 36: no uncontrolled crawling) ---------------------
 
-# Measured at 6k-char extraction batches on a representative run: a full
-# round packs ~16 batches plus ~5 per-source synthesis calls, so each extra
-# round costs roughly this many model calls, on top of a fixed plan +
-# contradiction + report cost. Used only to size a default budget; an explicit
-# RESEARCH_LLM_BUDGET always wins.
-LLM_FIXED_CALL_ESTIMATE = 17
-LLM_CALLS_PER_ROUND_ESTIMATE = 18
+# Measured at 6k-char extraction batches on a broad run: up to ~35 batches
+# plus synthesis groups, so each extra round costs roughly this many model
+# calls, on top of a fixed plan + contradiction + report cost. Used only to
+# size a default budget; an explicit RESEARCH_LLM_BUDGET always wins.
+# The ceiling only bounds spend -- the pipeline uses what it needs.
+LLM_FIXED_CALL_ESTIMATE = 25
+LLM_CALLS_PER_ROUND_ESTIMATE = 60
 
 
 def budget_estimate(rounds: int) -> int:
@@ -402,7 +411,7 @@ def budget_is_explicit() -> bool:
 
 def total_fetch_budget() -> int:
     """Ceiling on documents downloaded for one research run."""
-    return _int("RESEARCH_FETCH_BUDGET", 28, 0, 500)
+    return _int("RESEARCH_FETCH_BUDGET", 100, 0, 1000)
 
 
 def wall_clock_budget_s() -> float:

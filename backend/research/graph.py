@@ -65,6 +65,7 @@ class State(TypedDict, total=False):
     raw: Annotated[list, operator.add]    # parallel workers append here
     log: Annotated[list, operator.add]
     paa: Annotated[list, operator.add]   # related questions/searches bank
+    ai_leads: Annotated[list, operator.add]  # AI-overview reference links
     evidence: list
     gap: dict
     contradictions: list
@@ -163,8 +164,13 @@ async def search_worker(task):
         (res, meta), err = ([], {}), str(e)
     bank = list(meta.get("related_questions", []) or [])
     bank += list(meta.get("related_searches", []) or [])
+    leads = []
+    for ref in (meta.get("ai_overview_refs") or [])[:3]:
+        if isinstance(ref, dict) and ref.get("link"):
+            leads.append({"title": ref.get("title", ""),
+                          "url": ref["link"]})
     return {"raw": res, "log": [{**task, "count": len(res), "error": err}],
-            "paa": bank}
+            "paa": bank, "ai_leads": leads}
 
 
 def collect(state):
@@ -265,6 +271,14 @@ async def retrieve(state):
         # work, so highly-cited papers lead to the state of the art.
         for url in forward_candidates(sources, question, known, index):
             if url not in leads:
+                leads.append(url)
+        # AI-overview reference links: discovered by Google's overview, kept
+        # as plain URLs for discovery. Never prose -- the generated text
+        # stays out of the evidence path entirely.
+        for entry in state.get("ai_leads") or []:
+            url = (entry.get("url") or "") if isinstance(entry, dict) else ""
+            if url and url not in index and url not in known \
+                    and url not in leads:
                 leads.append(url)
         leads = leads[:config.references_max()]
         if leads:

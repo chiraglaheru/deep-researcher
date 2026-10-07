@@ -50,6 +50,8 @@ const analysisNotes = document.getElementById("analysis-notes");
 
 const downloadButton = document.getElementById("download-button");
 
+const pdfButton = document.getElementById("pdf-button");
+
 const copyButton = document.getElementById("copy-button");
 
 const reportWords = document.getElementById("report-words");
@@ -490,7 +492,12 @@ form.addEventListener("submit", async (event) => {
                     continue;
                 }
 
-                const data = JSON.parse(line.slice(6));
+                let data;
+                try {
+                    data = JSON.parse(line.slice(6));
+                } catch (parseError) {
+                    continue;
+                }
 
                 if (data.type === "error") {
                     throw new Error(data.message || "Research failed.");
@@ -598,6 +605,11 @@ function resetResults() {
 
     downloadButton.classList.add("hidden");
     copyButton.classList.add("hidden");
+    pdfButton.classList.add("hidden");
+    const pdfLoading = document.getElementById("pdf-loading");
+    if (pdfLoading) {
+        pdfLoading.classList.add("hidden");
+    }
 
     statusBanner.textContent = "";
     statusBanner.className = "status-banner hidden";
@@ -804,7 +816,7 @@ function snapRetrieval() {
 }
 
 
-function statTile(label, value, hint) {
+function statTile(value, label, hint) {
     const tile = document.createElement("div");
 
     tile.className = "stat-tile";
@@ -875,16 +887,16 @@ function renderRetrieval(data) {
         for (const source of sources) {
             const row = document.createElement("div");
 
-            row.className = `retrieval-row status-${source.status}`;
+            row.className = `retrieval-row status-${source.status || "unknown"}`;
 
             const badge = document.createElement("span");
 
             badge.className = "status-badge";
-            badge.textContent = source.status.replace("_", " ");
+            badge.textContent = (source.status || "unknown").replace("_", " ");
 
             const title = document.createElement("a");
 
-            title.href = source.url || "#";
+            title.href = safeExternalUrl(source.url);
             title.target = "_blank";
             title.rel = "noopener noreferrer";
             title.textContent = source.title || "(untitled)";
@@ -1261,6 +1273,7 @@ function renderReport(data) {
     }
 
     copyButton.classList.remove("hidden");
+    pdfButton.classList.remove("hidden");
 
     wireDownload();
 }
@@ -1272,6 +1285,46 @@ function wireDownload() {
         // served back as a download rather than faked client-side.
         window.location.href =
             `/api/report/download?q=${encodeURIComponent(currentQuestion)}`;
+    };
+
+    const rounds = roundsInput ? roundsInput.value : "2";
+    const throttle = throttleToggle ? throttleToggle.value : "1";
+    const pdfLoading = document.getElementById("pdf-loading");
+    pdfButton.onclick = async () => {
+        // Fetch (not navigate) so completion is observable: the bar runs
+        // until the bytes arrive, then the download starts.
+        const url =
+            `/api/report/pdf?q=${encodeURIComponent(currentQuestion)}`
+            + `&rounds=${encodeURIComponent(rounds)}`
+            + `&throttle=${encodeURIComponent(throttle)}`;
+        if (pdfLoading) {
+            pdfLoading.classList.remove("hidden");
+        }
+        pdfButton.disabled = true;
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error("PDF failed, status " + response.status);
+            }
+            const blob = await response.blob();
+            const anchor = document.createElement("a");
+            anchor.href = URL.createObjectURL(blob);
+            anchor.download = "research-report.pdf";
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(anchor.href), 5000);
+        } catch (error) {
+            pdfButton.textContent = "PDF failed";
+            setTimeout(() => {
+                pdfButton.textContent = "Save PDF";
+            }, 2000);
+        } finally {
+            if (pdfLoading) {
+                pdfLoading.classList.add("hidden");
+            }
+            pdfButton.disabled = false;
+        }
     };
 
     copyButton.onclick = async () => {
@@ -1291,6 +1344,17 @@ function wireDownload() {
 
 function formatNumber(value) {
     return Number(value || 0).toLocaleString("en-US");
+}
+
+
+function safeExternalUrl(url) {
+    // Only schemes that cannot execute script are allowed out of scraped
+    // search results; anything else falls back to an inert "#".
+    const value = String(url || "").trim();
+    if (/^https?:\/\//i.test(value)) {
+        return value;
+    }
+    return "#";
 }
 
 

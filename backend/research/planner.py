@@ -29,11 +29,19 @@ about across during over under
 
 SOURCES = ("web", "news", "scholar", "github", "patent")
 
-SYSTEM = """You are a research planner. Break the user's question into 3-5 sub-questions.
+SYSTEM = """You are a research planner. Break the user's question into 10-14 sub-questions.
 Sub-questions must be DISTINCT from each other: each must cover a different
-aspect, and none may restate another. Do not create several sub-questions that
+aspect, and none may restate another. Treat any overlap as failure: if two
+sub-questions could be answered by the same three sources, they are the same
+question and one of them must go. Do not create several sub-questions that
 differ only in wording.
-For each, give 1-2 concrete search queries and the best source for each:
+Unlike the report writers downstream, you are encouraged to elaborate: make
+each sub-question DEEPER AND LONGER than the user's question by adding domain
+context, the compared entities, the conditions that matter, and concrete
+technical terms. "How does X compare to Y for Z under condition W?" beats
+"Tell me about X". Terse questions produce generic search results; long,
+specific questions produce detailed ones.
+For each, give 2-3 concrete search queries and the best source for each:
 - web: docs, blogs, comparisons   - news: recent events/announcements
 - scholar: papers, benchmarks     - github: repos, issues, ecosystem activity
 - patent: patented mechanisms, filings, prior art (technical questions only)
@@ -55,6 +63,8 @@ Rules:
 - Every replacement must be clearly distinct from every kept sub-question and
   from every other replacement. Check each pair before answering.
 - Do not paraphrase or restate a rejected sub-question; go somewhere new.
+- Elaborate like the first planning pass: each replacement should be deep and
+  specific, naming entities, conditions and technical terms, never terse.
 - If the original question is already fully covered by the kept sub-questions,
   return an empty list rather than padding it out.
 - If you can only offer replacements you are confident are distinct, offer fewer.
@@ -238,7 +248,7 @@ def regenerate(question: str, kept: list[dict], rejected: list[dict]) -> list[di
         f"SUB-QUESTIONS ALREADY KEPT (do not repeat or rephrase these):\n{kept_text}\n\n"
         f"THESE WERE REJECTED AS DUPLICATES (go somewhere new, do not restate):\n"
         f"{rejected_text}\n\n"
-        f"Provide at most {min(3, len(rejected))} replacement sub-question(s)."
+        f"Provide at most {min(6, len(rejected))} replacement sub-question(s)."
     )
 
     try:

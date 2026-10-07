@@ -161,8 +161,9 @@ def _fetch_extracts(titles: list[str], chars: int = 6000) -> list[WikiDoc]:
         return out
 
     except Exception as exc:
-        log.info("wikipedia extracts failed: %s", exc)
-        return []
+        log.info("wikipedia extracts failed partway (%d kept): %s",
+                 len(out), exc)
+        return out
 
 
 def _slug(title: str) -> str:

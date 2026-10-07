@@ -11,6 +11,7 @@ meaning underneath a client that already works.
 """
 from .graph import graph
 from . import config
+from .runlog import begin as _begin_run, record as _record_event
 
 
 def _section_html(markdown: str) -> str:
@@ -21,6 +22,7 @@ def _section_html(markdown: str) -> str:
 async def deep_research(question: str, max_rounds: int = 3):
     evidence = []
     stats: dict = {}
+    _begin_run(question, max_rounds)
     init = {
         "question": question,
         "max_rounds": max_rounds,
@@ -28,24 +30,30 @@ async def deep_research(question: str, max_rounds: int = 3):
         "log": [],
         "notes": [],
         "paa": [],
+        "ai_leads": [],
     }
+
+    def emit(event: dict):
+        """Record for the PDF export, then stream to the browser."""
+        _record_event(question, event)
+        return event
 
     async for chunk in graph.astream(init, stream_mode="updates"):
         for node, upd in chunk.items():
             if node == "planner":
-                yield {"type": "plan", "data": upd["plan"]}
+                yield emit({"type": "plan", "data": upd["plan"]})
 
             elif node == "search_worker":
-                yield {"type": "results", **upd["log"][0]}
+                yield emit({"type": "results", **upd["log"][0]})
 
             elif node == "collect":
                 evidence = upd["evidence"]
-                yield {"type": "evidence", "count": len(evidence)}
+                yield emit({"type": "evidence", "count": len(evidence)})
 
             elif node == "retrieve":
                 stats = upd.get("retrieval_stats") or {}
                 if stats.get("enabled"):
-                    yield {
+                    yield emit({
                         "type": "retrieval",
                         "data": {
                             "attempted": stats.get("attempted", 0),
@@ -59,15 +67,15 @@ async def deep_research(question: str, max_rounds: int = 3):
                             "references_followed": stats.get("references_followed", 0),
                             "sources": stats.get("sources", [])[:40],
                         },
-                    }
+                    })
                 else:
-                    yield {"type": "retrieval", "data": {
+                    yield emit({"type": "retrieval", "data": {
                         "enabled": False,
-                        "note": stats.get("note", "full-text retrieval unavailable")}}
+                        "note": stats.get("note", "full-text retrieval unavailable")}})
 
             elif node == "analyse":
                 records = upd.get("extracted") or []
-                yield {
+                yield emit({
                     "type": "analysis",
                     "data": {
                         "records": len(records),
@@ -75,13 +83,13 @@ async def deep_research(question: str, max_rounds: int = 3):
                         "sources_summarised": len(upd.get("source_synth") or {}),
                         "notes": list(upd.get("notes") or [])[:8],
                     },
-                }
+                })
 
             elif node == "gap_check":
-                yield {"type": "gap", "data": upd["gap"]}
+                yield emit({"type": "gap", "data": upd["gap"]})
 
             elif node == "contradiction_check":
-                yield {"type": "contradictions", "data": upd["contradictions"]}
+                yield emit({"type": "contradictions", "data": upd["contradictions"]})
 
             elif node == "synthesizer":
                 export = upd.get("export") or {}
@@ -92,7 +100,7 @@ async def deep_research(question: str, max_rounds: int = 3):
                                                    "headline": "COMPLETE REPORT"}
                 # Emitted as its own event so a client can render the state
                 # before it has the (potentially very large) report body.
-                yield {"type": "status", "data": completion}
+                yield emit({"type": "status", "data": completion})
                 # Section progress first: if the orchestrator model failed
                 # mid-report and a fallback resumed from the output pool, the
                 # stream still flows in document order instead of stalling
@@ -102,11 +110,11 @@ async def deep_research(question: str, max_rounds: int = 3):
                         section_html = _section_html(markdown)
                     except Exception:
                         section_html = ""
-                    yield {"type": "report_section",
-                           "heading": heading,
-                           "data": markdown,
-                           "html": section_html}
-                yield {
+                    yield emit({"type": "report_section",
+                                      "heading": heading,
+                                      "data": markdown,
+                                      "html": section_html})
+                yield emit({
                     "type": "report",
                     "data": upd["report"],
                     "html": upd.get("report_html") or "",
@@ -115,7 +123,7 @@ async def deep_research(question: str, max_rounds: int = 3):
                     "retrieval": stats,
                     "export": export,
                     "status": completion,
-                }
+                })
 
 
 def _export_meta(question: str) -> dict:

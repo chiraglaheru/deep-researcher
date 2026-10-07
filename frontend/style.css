@@ -1012,6 +1012,45 @@ details summary {
     background: rgba(255, 255, 255, 0.12);
 }
 
+/* Thin indeterminate bar under Save PDF while the server compiles it. */
+.pdf-loading {
+    height: 3px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.08);
+    margin-top: 0.4rem;
+    min-width: 120px;
+}
+
+:root[data-theme="light"] .pdf-loading {
+    background: rgba(60, 50, 30, 0.1);
+}
+
+.pdf-loading span {
+    display: block;
+    height: 100%;
+    width: 40%;
+    border-radius: inherit;
+    background: #D97756;
+    animation: pdf-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes pdf-slide {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(280%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pdf-loading span {
+        animation: none;
+        width: 100%;
+    }
+}
+
 .report {
     line-height: 1.7;
     overflow-wrap: anywhere;

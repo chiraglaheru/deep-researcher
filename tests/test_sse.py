@@ -339,3 +339,25 @@ def test_planner_is_quiet_when_budget_is_adequate(monkeypatch):
     update = graph_module.planner({"question": "q", "max_rounds": 4})
 
     assert "notes" not in update
+
+
+def test_frontend_assets_require_revalidation(client):
+    """Stale JS/CSS must never be served from heuristic cache.
+
+    Regression: with no Cache-Control header, browsers cache app.js and
+    style.css heuristically, so a fresh index.html runs against a stale
+    bundle (unstyled tabs, frozen button text).
+    """
+    for path in ("/", "/index.html", "/app.js", "/style.css",
+                 "/markdown.js"):
+        assert client.get(path).headers.get("cache-control") == "no-cache"
+
+
+def test_api_responses_are_not_no_cache(client, monkeypatch):
+    """The middleware must not touch API payloads or the SSE stream."""
+    install_fake(monkeypatch, [{"type": "report", "data": "x", "sources": []}])
+
+    response = client.get("/api/research?q=test")
+
+    assert "no-cache" not in response.headers.get("cache-control", "")
+    assert response.headers["content-type"].startswith("text/event-stream")

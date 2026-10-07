@@ -55,6 +55,21 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def no_cache_frontend(request, call_next):
+    """Force revalidation of the frontend shell on every load.
+
+    Without an explicit Cache-Control, browsers fall back to heuristic
+    caching and can serve days-old JS/CSS without revalidating — exactly
+    how a fresh index.html ends up running against a stale app.js.
+    API routes (including the SSE stream) are untouched.
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/health")
 async def health():
     """Liveness probe for uptime monitors, load balancers and containers."""

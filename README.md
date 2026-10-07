@@ -2,6 +2,45 @@
 
 An agentic research system. It takes a question, plans sub-questions, searches several sources in parallel, collects and deduplicates evidence, checks whether the evidence is sufficient and searches again as needed, and then synthesises a final cited report.
 
+## How it works (the simple version)
+
+Think of it as a small research team working down an assembly line:
+
+```text
+        ┌──────────────────────────────────────────────────┐
+        │ 1. YOU ASK — one question, e.g. "which framework  │
+        │    should I build my app with?"                   │
+        └────────────────────────┬─────────────────────────┘
+                                 ▼
+        ┌──────────────────────────────────────────────────┐
+        │ 2. THE PLANNER splits it into 3–5 smaller        │
+        │    questions, one per angle                      │
+        └────────────────────────┬─────────────────────────┘
+                                 ▼
+        ┌──────────────────────────────────────────────────┐
+        │ 3. THE SEARCHERS look everything up at once —    │
+        │    web, news, papers, code, patents              │
+        └────────────────────────┬─────────────────────────┘
+                                 ▼
+        ┌──────────────────────────────────────────────────┐
+        │ 4. THE READER opens the actual pages (not just   │
+        │    snippets) and takes clean, traceable notes    │
+        └────────────────────────┬─────────────────────────┘
+                                 ▼
+        ┌──────────────────────────────────────────────────┐
+        │ 5. THE FACT-CHECKER asks "are we missing         │
+        │    anything?" If yes → back to step 3. Genuine    │
+        │    disagreements between sources get flagged.    │
+        └────────────────────────┬─────────────────────────┘
+                                 ▼
+        ┌──────────────────────────────────────────────────┐
+        │ 6. THE WRITER assembles the final report, every  │
+        │    claim footnoted to a source that was read     │
+        └──────────────────────────────────────────────────┘
+```
+
+Two rules hold the whole line together: nothing the team writes may come from thin air (every claim traces back to a document it actually read), and when the evidence is too thin the report says so on the cover instead of bluffing.
+
 ## Overview
 
 ```text
@@ -45,13 +84,21 @@ The backend is FastAPI; the frontend is plain HTML/CSS/JS with no build step. Fa
 
 - Breaks a question into 3–5 sub-questions, each with its own searches
 - Runs every search in a source round concurrently
-- Sources: Google web, Google News, Google Scholar, and GitHub, all through SerpApi
+- Sources: Google web, Google News, Google Scholar, GitHub and patents, all through SerpApi
+- Prefetches a Wikipedia baseline before any model sees retrieved content
+- Reads the real documents (PDFs, papers, ebooks, repos, patents) instead of summarising snippets
+- Falls back to open-access copies, then Tavily, then Firecrawl for unreadable pages
 - Deduplicates evidence by normalised URL and flags sources older than three years as stale
-- Loops back for more searching when the evidence is thin, up to a configurable round limit
+- Filters social/video noise from results and downranks wrong-entity matches
+- Loops back for more searching when the evidence is thin, aimed at named evidence gaps, up to a configurable round limit
 - Detects genuine disagreements between sources
+- Caps off-target evidence (wrong model variant, wrong architecture) instead of spending strong findings on it
+- Marks the report partial when a dimension lacks adequate evidence, and says so in the report itself
 - Streams every stage to the browser over SSE — no polling, no waiting for the whole run
-- Retries and falls back across several models when one is rate-limited or overloaded
+- Retries and falls back across several models when one is rate-limited or overloaded, with one bounded second pass when everything throttles at once
 - Skips models that just failed instead of re-trying them at the next stage
+- Server-renders the report to HTML so the browser just displays it
+- Tabbed results (Report / Sources / How it was researched) with a live step-by-step progress list, light and dark themes
 - Optional mock mode runs the entire pipeline with zero API calls
 - Dev-only SerpApi response cache
 
@@ -85,7 +132,7 @@ cp .env.example .env                     # then fill in your keys
 
 ```bash
 python -c "import sys; print(sys.version)"    # must be 3.10+
-pytest -q -m "not live"                       # 184 tests, no network needed
+pytest -q -m "not live"                       # 225 tests, no network needed
 ```
 
 ### If you see many errors at once
@@ -134,20 +181,31 @@ cp .env.example .env
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | yes | used by `litellm` for the `gemini/...` model prefix |
-| `SERPAPI_KEY` | yes | all four search sources |
+| `SERPAPI_KEY` | yes | all five search sources |
 | `GITHUB_TOKEN` | no | raises GitHub API rate limits |
+| `TAVILY_API_KEY` | no | paid extraction fallback; empty disables it |
+| `FIRECRAWL_API_KEY` | no | paid fallback after Tavily; empty disables it |
+| `UNPAYWALL_EMAIL` | no | any address; enables Unpaywall open-access lookup |
 
 ### Model chain
 
-Calls try models in order and move on when one is unavailable.
+Calls try models in order and move on when one is unavailable. Switching
+models is a `.env`-only change: set the two lines, restart uvicorn (it loads
+`.env` once at boot), and the new chain takes effect. Restarting also clears
+all model cooldowns.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_MODEL` | `gemini/gemini-3.6-flash` | primary model |
+| `LLM_MODEL` | `gemini/gemini-3.5-flash-lite` | primary model |
 | `LLM_FALLBACKS` | — | comma-separated fallbacks, tried in order |
 | `LLM_MODEL_DEFAULT` | falls back to `LLM_MODEL` | planner, gap check |
 | `LLM_MODEL_JUDGE` | falls back to `LLM_MODEL` | contradiction check |
 | `LLM_MODEL_SYNTH` | falls back to `LLM_MODEL` | report synthesis |
+
+Every model string must carry a provider prefix, and every model in the chain
+must support JSON mode (the planner, extraction and gap check all send
+`response_format=json_object`). A per-role override is prepended, not
+isolated: `LLM_MODEL` stays second in that role's chain.
 
 ### Resilience
 
@@ -157,8 +215,9 @@ Calls try models in order and move on when one is unavailable.
 | `LLM_DAILY_COOLDOWN_S` | `3600` | how long to park a model after a daily-quota 429 |
 | `LLM_PER_MINUTE_COOLDOWN_S` | `60` | fallback cooldown when a 429 reports no retry delay |
 | `LLM_OVERLOAD_COOLDOWN_S` | `30` | cooldown after a model exhausts every attempt on 503 |
+| `LLM_CHAIN_RETRY_WAIT_S` | `30` | longest to wait before one second pass over the whole chain; only when every failure was a temporary rate limit |
 
-A per-model health tracker, guarded by a lock and timed with `time.monotonic()`, remembers which models just failed. Cooling models are skipped when the chain is built, so a model that returned 429s or 503s does not get retried immediately in the next stage.
+A per-model health tracker, guarded by a lock and timed with `time.monotonic()`, remembers which models just failed. Cooling models are skipped when the chain is built, so a model that returned 429s or 503s does not get retried immediately in the next stage. Cooldowns and learned prompt-size ceilings persist in `.cache/model_health.json`, so a restart no longer wipes the system's memory of failing models.
 
 ### Caching
 
@@ -209,7 +268,8 @@ The frontend requests `/api/research` with a relative path, so it works under ei
 | Parameter | Default | Notes |
 | --- | --- | --- |
 | `q` | required | the research question; missing returns 422 |
-| `rounds` | `2` | clamped to `1`–`4` |
+| `rounds` | `2` | clamped to the configured ceiling (`RESEARCH_MAX_ROUNDS_LIMIT`) |
+| `throttle` | configured default | `0`/`1` overrides request pacing for this run only |
 
 Responds with `text/event-stream`. Every frame is `data: {json}\n\n`, and the stream always ends with a `done` frame.
 
@@ -228,7 +288,9 @@ curl -N "http://127.0.0.1:8000/api/research?q=What%20is%20FastAPI%3F&rounds=1"
 | `retrieval` | `data` = `{attempted,retrieved,full_text,partial,metadata_only,failed,words,chunks,references_followed,sources[]}` |
 | `analysis` | `data` = `{records,dimensions[],sources_summarised,notes[]}` |
 | `contradictions` | `data` = list of `{topic,side_a,sources_a,side_b,sources_b,likely_cause}` |
-| `report` | `data` = markdown, `sources`, `stats`, `retrieval`, `export` |
+| `status` | `data` = completion state, so clients can render it before the body arrives |
+| `report_section` | one finished section at a time (`heading`, `data`, `html`) for progressive rendering |
+| `report` | `data` = markdown, `html` = server-rendered HTML, `sources`, `stats`, `retrieval`, `export` |
 | `error` | `message` |
 | `done` | always last |
 
@@ -277,6 +339,21 @@ that would rather render it themselves. Generated files are also browsable at
 A browser cannot write to the user's disk, so the server writes the file and
 serves it back. Nothing here tries to work around browser restrictions.
 
+### Health and model inventory
+
+- `GET /health` and `GET /api/health` return `{"status": "ok"}` for uptime monitors and load balancers.
+- `GET /v1/models` lists the models in the configured chain in OpenAI list format, so external tooling probing for an LLM endpoint gets an answer instead of a 404.
+
+## Frontend
+
+No build step, no framework — `index.html`, `app.js`, `style.css` plus a
+bundled serif display font. Results render as three tabs (Report / Sources /
+How it was researched) above a live step-by-step progress list, with flowing
+retrieval counters while the run is in motion. The report arrives as
+server-rendered HTML with hover reference popups; a floating settings menu
+holds the light/dark theme switch. Selects carry `ⓘ` tooltips fed by the
+backend's own limit data.
+
 ## How it works
 
 The pipeline has two halves. Everything that can be done by parsing is done by
@@ -302,7 +379,7 @@ Sends the question to the model and validates the reply: it must be a JSON objec
 
 ### Search — `backend/research/searcher.py`
 
-`search(source, query, n)` maps each source to a SerpApi engine — `google`, `google_news`, `google_scholar`, and `google` with a `site:github.com` prefix — and normalises every row to `{title, link, snippet, source}`. The results are then sent to the collector.
+`search(source, query, n)` maps each source to a SerpApi engine — `google`, `google_news`, `google_scholar`, `google` with a `site:github.com` prefix, and `google_patents` — and normalises every row to `{title, link, snippet, source}`. Social/video hosts are filtered from web/news results (`SEARCH_BLOCKED_HOSTS`), and Scholar rows carry cited-by counts plus open-access PDF links. `search_full()` additionally returns what the response carried for free: related questions/searches (fed to gap recovery), the knowledge-graph entity (used to downrank wrong-entity matches), and answer boxes (added as bonus evidence). The planner can sharpen queries with autocomplete suggestions (`SEARCH_EXPAND_QUERIES`), and forward citation chasing (`cited_by_search`) finds newer papers citing heavily-cited ones. The results are then sent to the collector.
 
 ### Retrieval — `backend/research/fetch.py`
 
@@ -314,8 +391,14 @@ is downloaded and parsed, by strategy:
 | `.pdf` | `pypdf` | full text, per page, up to `FETCH_MAX_PAGES` |
 | `arxiv.org` | arXiv API | authoritative title, authors, date, DOI, abstract |
 | `github.com/owner/repo` | GitHub API + raw README | stars, licence, topics, last push, and the README |
+| Project Gutenberg | predictable plain-text URLs | full ebook text, boilerplate stripped |
+| PubMed Central | BioC JSON API | section-headed full text, no HTML parsing |
+| `link.springer.com` | article HTML | full text when open access, honest partial otherwise |
+| `patents.google.com` | patent HTML | the filing, labelled as a patent |
 | `text/html` | `lxml` parse | article container only, headings and tables preserved |
 | plain / markdown / json | as-is | text kept verbatim, code indentation intact |
+
+When the direct fetch fails, recovery runs cheapest-first: an open-access copy via OpenAlex / Semantic Scholar / Unpaywall (`backend/research/oa.py`), then Tavily extraction, then Firecrawl scraping (`backend/research/webextract.py`, capped per run with `TAVILY_MAX_PER_RUN` / `FIRECRAWL_MAX_PER_RUN`). Robots-blocked URLs are never escalated.
 
 Every document is graded, and the grade travels with it into the report:
 
@@ -343,12 +426,17 @@ block is split on sentence boundaries. Every chunk keeps `source_url`,
 ### Relevance — `backend/research/relevance.py`
 
 No model call. Passages are scored by IDF-weighted term overlap against the
-question, with boosts for chunks that cover a named dimension or contain
-quantitative claims, and a penalty for boilerplate. Results are then diversified
+question, with boosts for chunks that cover a named dimension, name a compared
+entity in full, contain quantitative claims or were recently published (on
+recency-signalled questions), and penalties for boilerplate, single-generic-term
+matches (how song lyrics lose to benchmarks), snippet-only sources and
+wrong-knowledge-graph-entity passages. Results are then diversified
 round-robin across sources so one verbose document cannot fill the batch.
 The same module extracts the comparison targets (`React Native, Flutter, native
 Android`) and the analysis dimensions (`performance`, `app size`, …); the
-dimensions decide which sections the report needs.
+dimensions decide which sections the report needs. It also detects
+related-but-different-variant evidence (another release, another architecture
+class) so extraction can cap it instead of spending strong findings on it.
 
 ### Evidence — `backend/research/evidence.py`, `extract.py`
 
@@ -368,12 +456,20 @@ plausible citation for a passage that does not contain it:
 Records accumulate across gap-check rounds; a later round that finds less never
 discards what an earlier round already established.
 
+Findings about a related-but-different variant carry an explicit applicability
+note and rank below directly applicable evidence for the same dimension.
+Per-source synthesis skips weak-only sources instead of spending quota
+assessing them. Scholar cited-by counts travel with records into prompts and
+break reference-numbering ties toward authoritative works.
+
 ### Reference discovery — `backend/research/references.py`
 
 Outbound links and DOIs from documents that were actually read are mined for
 extra leads, filtered deterministically against the question, and capped by
 `REFERENCES_MAX`, `REFERENCES_PER_SOURCE` and a default depth of 1. Social and
-account-wall hosts are skipped. A paper's own citations are worth chasing once;
+account-wall hosts are skipped. Highly-cited papers are additionally chased
+*forward* to the documents citing them (`SCHOLAR_FORWARD_MAX` per run), since
+citers are usually newer than the cited work. A paper's own citations are worth chasing once;
 chasing them recursively is not.
 
 ### Contradiction check
@@ -395,6 +491,16 @@ Sections: Executive Summary, Scope and Methodology, one per requested dimension,
 Where the Evidence Conflicts, Scenario Analysis, Decision Framework, Evidence
 Quality and Limitations, Conclusion, then a deterministic Evidence-by-Source
 table and References list. `REPORT_DEPTH=brief` produces a short summary instead.
+Each section is handed only the top-ranked evidence (`REPORT_EVIDENCE_PER_SECTION`).
+
+A finished section is stored verbatim in a per-run output pool; if its model
+call failed, one pool-grounded retry lets a fallback continue the report
+instead of restarting it. Dimensions without enough adequate findings become
+named evidence holes: the gap loop targets them, the limitations section must
+state them, and the run reports `PARTIAL` until they are covered — completion
+means adequate evidence, not just assembled sections. The server compiles the
+finished markdown to HTML once, so browsers (and any other client) display it
+without parsing anything.
 
 If a section cannot be written the report says so in a visible note, rather than
 reading as complete when it is not. With no retrieved evidence at all, the
@@ -411,11 +517,20 @@ Every call goes through one `ask()`:
 - 60s per-call timeout, with `litellm`'s own retries disabled so they do not multiply
 - failures log a `WARNING` naming the model, the exception class and a short summary
 - exhausting the chain raises `LLMChainError`, which the SSE layer turns into an `error` event
+- malformed model JSON is salvaged when possible (prose wrapping, trailing commas); otherwise the next model is tried, never a raw decoder traceback
+- when every model failed only with temporary rate limits, the chain waits once (bounded by `LLM_CHAIN_RETRY_WAIT_S`) for the soonest recovery and tries a single second pass; auth failures and oversized prompts fail fast instead
 
 A per-process health table parks a model that just returned 429/503 so the next
 pipeline stage does not walk straight back into it, classifying Google's
-`RESOURCE_EXHAUSTED` bodies into per-day and per-minute quotas. If every model is
+`RESOURCE_EXHAUSTED` bodies into per-day and per-minute quotas, and learning
+per-model prompt-size ceilings from request-too-large rejections so oversized
+prompts skip models that cannot serve them. If every model is
 cooling down, the soonest is tried anyway rather than failing outright.
+
+Every prompt that processes collected material opens with the same hard rule:
+use only what the prompt contains, never add facts from model knowledge. The
+planner and gap check are exempt — their job is inventing questions, not
+processing evidence.
 
 `CallBudget` bounds total model calls per run; later stages reserve part of it so
 report writing cannot be starved by extraction.
@@ -433,42 +548,52 @@ deep-researcher/
 │   ├── research/
 │   │   ├── graph.py             LangGraph pipeline
 │   │   ├── config.py            every tunable, env-driven with defaults
-│   │   ├── fetch.py             document retrieval: pdf / arxiv / github / html
+│   │   ├── fetch.py             document retrieval: pdf / arxiv / github / html,
+│   │   │                        gutenberg / pmc / springer / patent
+│   │   ├── oa.py                open-access resolution (OpenAlex, Scholar, Unpaywall)
+│   │   ├── webextract.py        paid extraction fallback: Tavily, then Firecrawl
 │   │   ├── chunker.py           structure-aware chunking with provenance
 │   │   ├── relevance.py         deterministic scoring, targets & dimensions
 │   │   ├── extract.py           batched evidence extraction + quote verification
 │   │   ├── evidence.py          Evidence records, quality tiers, statistics
-│   │   ├── references.py        bounded reference discovery
+│   │   ├── references.py        bounded reference discovery, forward citations
 │   │   ├── report.py            deep section-wise synthesis, reference numbering
 │   │   ├── report_prompts.py    the original single-call prompt (fallback)
+│   │   ├── output_pool.py       per-run finished-section memory for fallbacks
+│   │   ├── markdown_html.py     server-side markdown → HTML compiler
+│   │   ├── wiki.py              Wikipedia baseline, keyword-driven per sub-question
 │   │   ├── export.py            markdown export with front matter
 │   │   ├── llm.py               retries, fallback chain, health, budgets, mock
-│   │   ├── planner.py           question → sub-questions
-│   │   ├── searcher.py          SerpApi wrapper, response cache, mock mode
+│   │   ├── planner.py           question → sub-questions (autocomplete-sharpened)
+│   │   ├── searcher.py          SerpApi wrapper, extras, patents, cache, mock mode
 │   │   ├── collector.py         dedupe, freshness, contradiction detection
 │   │   └── researcher.py        graph → SSE events
-│   ├── tools/                   legacy single-purpose search tools (off-path)
-│   └── evidence/                legacy evidence collector (off-path)
 ├── frontend/
 │   ├── index.html
-│   ├── app.js                   SSE consumer, progress panels, export
+│   ├── app.js                   SSE consumer, tabs, progress, tooltips, export
 │   ├── markdown.js              escaping markdown renderer, citation anchors
-│   └── style.css
+│   ├── style.css
+│   └── Anthropic_font/          bundled display font
 ├── exports/                     generated markdown reports (gitignored)
 ├── tests/
 │   ├── test_sse.py              SSE contract, ordering, clamping, 422
-│   ├── test_llm.py              retry, fallback, cooldowns, 429 classification
+│   ├── test_llm.py              retry, fallback, cooldowns, 429 classification, JSON salvage
 │   ├── test_mock_pipeline.py    whole graph on mocks
 │   ├── test_deep_research.py    fetch, chunking, evidence, relevance, export
+│   ├── test_evidence_adequacy.py  rank penalties, fidelity caps, holes, recovery
+│   ├── test_resilience_audit.py batch math, budgets, host filter, headings
+│   ├── test_serpapi_integration.py  extras, patents, expansion, citations
+│   ├── test_output_pool.py      pool immutability, resume, budget discipline
 │   ├── test_search_cache.py     search cache
 │   ├── test_pipeline.py         graph wiring, collector, live SerpApi
-│   └── test_{collector,github,news,serpapi}.py
+│   ├── test_planner_dedup.py    dedup, regeneration, planner fallback
+│   ├── test_wiki.py             baseline pooling, keyword queries
+│   ├── test_fetch_sources.py    gutenberg, BioC, OA resolver, paid fallbacks
+│   └── test_frontend_render.py  markdown renderer via dukpy
 ├── conftest.py                  sys.path setup, `live` marker, env cleanup
 ├── .env.example
 └── requirements.txt
 ```
-
-`backend/tools/` and `backend/evidence/` are the pre-LangGraph layer. They are still covered by tests but are no longer on the live path.
 
 ## Request pacing
 
@@ -492,14 +617,14 @@ plan.
 The throttle is a process-wide singleton per kind. The provider's constraint
 belongs to the provider, not to one request, so every run shares it.
 
-**Cost.** For a run needing ~43 model calls:
+**Cost.** For a run needing ~53 model calls:
 
 | Rate | Spacing | Added to a ~20 min run |
 | --- | --- | --- |
 | off | — | 0 |
-| 30/min | 2.0s | ~1.4 min |
-| 20/min | 3.0s | ~2.1 min |
-| 12/min | 5.0s | ~3.6 min |
+| 30/min | 2.0s | ~1.8 min |
+| 20/min | 3.0s | ~2.7 min |
+| 12/min | 5.0s | ~4.4 min |
 
 **Turning it off.** The UI has a *Request pacing* selector — *Throttled* (the
 default, while providers are free-tier) or *Unthrottled*. `GET /api/research`
@@ -536,6 +661,12 @@ is kept rather than planning nothing.
 Tune with `PLAN_DEDUP_THRESHOLD`, `PLAN_DEDUP_GRAM_THRESHOLD` (set either to
 `1.0` to disable) and `PLAN_DEDUP_REGENERATE`.
 
+Before searching, each planned query can be sharpened with autocomplete
+phrasing (`SEARCH_EXPAND_QUERIES`): a suggestion replaces the draft only when
+it adds a new technical term, and any failure keeps the original. A Wikipedia
+baseline is prefetched per question and sub-question (keyword queries only)
+so the pipeline starts from stable definitions at zero API cost.
+
 ## Research depth
 
 The UI's depth selector and the `rounds` parameter both feed the gap-check loop.
@@ -543,17 +674,17 @@ The ceiling is `RESEARCH_MAX_ROUNDS_LIMIT` (default 10), read by the API and by
 `/api/config`, so raising it needs no code change.
 
 **Depth and budget are coupled.** Measured on a representative run, each extra
-round costs about 13 model calls (~8 extraction batches plus ~5 per-source
+round costs about 18 model calls (~16 small extraction batches plus ~5 per-source
 synthesis calls) on top of a fixed ~17:
 
 | rounds | model calls needed |
 | --- | --- |
-| 1 | ~30 |
-| 2 | ~43 |
-| 3 | ~56 |
-| 4 | ~69 |
-| 6 | ~95 |
-| 10 | ~147 |
+| 1 | ~35 |
+| 2 | ~53 |
+| 3 | ~71 |
+| 4 | ~89 |
+| 6 | ~125 |
+| 10 | ~197 |
 
 If `RESEARCH_LLM_BUDGET` is unset the budget auto-sizes to the requested depth,
 so deeper runs actually go deeper. If you pin it explicitly and it is too small,
@@ -590,7 +721,7 @@ behaviour.
 pytest -q
 ```
 
-141 tests. All but one run offline. The retrieval and chunking tests stub the HTTP
+225 tests. All but one run offline. The retrieval and chunking tests stub the HTTP
 session, so they need no network either. `test_serpapi_live` is marked `live` and spends one SerpApi credit; skip it with:
 
 ```bash
@@ -631,10 +762,8 @@ LLM_MOCK=1 SEARCH_MOCK=1 uvicorn backend.main:app --reload
 
 - `README` aside, there is no CI workflow, so nothing runs the suite on a pull request.
 - The 429 parser matches several spellings of Google's quota id and retry delay because no live 429 was available to test against. A misclassification degrades to the shorter per-minute cooldown instead of the more precise daily backoff.
-- The cooldown tracker is per-process: it resets on restart, and multiple uvicorn workers would each rediscover the same failing models independently.
-- There is no blocked-domain list and no relevance filtering, so low-quality sources reach the model.
+- Multiple uvicorn workers would each keep their own throttle state, though model health itself is shared through the on-disk registry.
 - `graph.py` catches broad `Exception` around search calls, which will also mask genuine bugs in that block.
-- The report renders as plain text in the browser, so markdown headings appear literally.
 - The SerpApi cache rarely hits across runs, because the planner is nondeterministic and generates different queries each time. It reliably prevents duplicate calls within a run.
 
 ## Contributing

@@ -727,7 +727,7 @@ def _advance_notice(model: str, index: int, total: int,
 
 
 def ask(system: str, user: str, json_mode: bool = False, role: str = "default",
-        _retried: bool = False):
+        _retried: bool = False, on_chunk=None):
     if _mock_enabled():
         return _mock(_mock_kind(system, role), user, json_mode)
 
@@ -760,9 +760,31 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default",
                                   {"role": "user", "content": user}],
                         timeout=CALL_TIMEOUT_SECONDS,
                         num_retries=0,  # retries are handled here, not by litellm
+                        stream=bool(on_chunk and not json_mode),
                         **kw,
                     )
-                out = _clean_model_output(r.choices[0].message.content)
+                if on_chunk and not json_mode:
+                    pieces = []
+                    thinking = False
+                    for chunk in r:
+                        delta = getattr(chunk.choices[0], "delta", None)
+                        piece = getattr(delta, "content", None) if delta else None
+                        if not piece:
+                            continue
+                        pieces.append(piece)
+                        if not thinking and "<think>" in piece.lower():
+                            thinking = True
+                        if thinking:
+                            if "</think>" in piece.lower():
+                                thinking = False
+                                visible = piece.split("</think>", 1)[1]
+                                if visible:
+                                    on_chunk(visible)
+                        else:
+                            on_chunk(piece)
+                    out = _clean_model_output("".join(pieces))
+                else:
+                    out = _clean_model_output(r.choices[0].message.content)
                 _clear_cooldown(model)
                 if not json_mode:
                     return out
@@ -845,7 +867,7 @@ def ask(system: str, user: str, json_mode: bool = False, role: str = "default",
             log.warning("llm chain exhausted by temporary rate limits; "
                         "waiting %.0fs for recovery, then one final pass", delay)
             sleep(delay)
-            return ask(system, user, json_mode, role, _retried=True)
+            return ask(system, user, json_mode, role, _retried=True, on_chunk=on_chunk)
         log.warning("llm chain exhausted by temporary rate limits; soonest "
                     "recovery in %s (cap %.0fs): failing instead of waiting",
                     f"{delay:.0f}s" if delay is not None else "unknown", cap)

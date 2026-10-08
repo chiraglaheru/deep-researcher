@@ -100,6 +100,7 @@ let progressiveHtml = "";
 let progressSearchSeen = new Set();
 let progressSearchResults = 0;
 let progressSections = 0;
+let streamingSections = {};
 
 
 function selectTab(name, focusTab) {
@@ -158,6 +159,7 @@ function resetProgress() {
     progressSearchSeen = new Set();
     progressSearchResults = 0;
     progressSections = 0;
+    streamingSections = {};
     for (const step of Object.keys(progressSteps)) {
         setStepState(step, "todo");
     }
@@ -671,6 +673,10 @@ function displayEvent(data, question) {
 
     if (data.throttle) {
         renderThrottleStats(data.throttle);
+    }
+
+    if (data.type === "report_chunk") {
+        renderReportChunk(data);
     }
 
     if (data.type === "report_section") {
@@ -1201,6 +1207,38 @@ function renderStatus(status) {
     }
     if (reportLabel && state !== "completed") {
         reportLabel.textContent = (STATUS_TEXT[state] || state) + " — INCOMPLETE";
+    }
+}
+
+
+function renderReportChunk(data) {
+    if (!data || !data.heading || !data.data) {
+        return;
+    }
+
+    const heading = data.heading;
+    streamingSections[heading] = (streamingSections[heading] || "") + data.data;
+
+    let markdown = streamingSections[heading];
+    const lines = markdown.split("\n");
+    if (lines.length && lines[0].trim().toLowerCase() === ("## " + heading).toLowerCase()) {
+        markdown = lines.slice(1).join("\n");
+    }
+
+    const sectionHtml = window.renderMarkdown
+        ? window.renderMarkdown(markdown)
+        : window.escapeHtml(markdown).replace(/\n/g, "<br>");
+
+    report.classList.remove("is-loading");
+    report.innerHTML =
+        "<div class=\"streaming-report-section\">"
+        + "<h2>" + window.escapeHtml(heading) + "</h2>"
+        + sectionHtml
+        + "</div>";
+    wireCitationTooltips();
+
+    if (progWriteDetail) {
+        progWriteDetail.textContent = "Writing " + heading + "…";
     }
 }
 

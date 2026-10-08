@@ -1,6 +1,3 @@
-## Live 
-[Open Deep Researcher]([https://your-service.onrender.com](https://deep-researcher-cxk2.onrender.com/)
-
 # Deep Researcher
 
 An agentic research system. It takes a question, plans sub-questions, searches several sources in parallel, collects and deduplicates evidence, checks whether the evidence is sufficient and searches again as needed, and then synthesises a final cited report.

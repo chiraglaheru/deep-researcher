@@ -614,9 +614,29 @@ async def synthesizer(state):
     notes = list(state.get("notes") or [])
     question, col = state["question"], _col(state)
     contradictions = state.get("contradictions") or []
-    result = await asyncio.to_thread(
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def on_chunk(heading: str, chunk: str):
+        loop.call_soon_threadsafe(chunk_queue.put_nowait, (heading, chunk))
+
+    report_task = asyncio.create_task(asyncio.to_thread(
         generate_report, question, col, contradictions,
-        records, state.get("source_synth") or {}, notes, state.get("plan"), _budget(state))
+        records, state.get("source_synth") or {}, notes, state.get("plan"),
+        _budget(state), on_chunk))
+
+    while not report_task.done():
+        try:
+            heading, chunk = await asyncio.wait_for(chunk_queue.get(), timeout=0.25)
+        except asyncio.TimeoutError:
+            continue
+        yield {"type": "report_chunk", "heading": heading, "data": chunk}
+
+    while not chunk_queue.empty():
+        heading, chunk = await chunk_queue.get()
+        yield {"type": "report_chunk", "heading": heading, "data": chunk}
+
+    result = await report_task
     report = result.markdown
     try:
         report_html = render_markdown_html(report) if report else ""

@@ -309,7 +309,8 @@ def _write_section(system: str, question: str, heading: str, instruction: str,
                    records: list[Evidence], refs: dict[str, int],
                    targets: list[str], budget=None,
                    min_words: int = 350,
-                   failed: list[str] | None = None) -> str:
+                   failed: list[str] | None = None,
+                   on_chunk=None) -> str:
     if not records:
         if failed is not None:
             failed.append(f"{heading} (no evidence was selected for this section)")
@@ -340,7 +341,7 @@ def _write_section(system: str, question: str, heading: str, instruction: str,
         f"Return markdown starting with the heading line '## {heading}'. No preamble."
     )
     try:
-        return ask(system, user, role="synth").strip()
+        return ask(system, user, role="synth", on_chunk=on_chunk).strip()
     except LLMChainError as exc:
         log.warning("section %r failed: %s", heading, exc)
         if failed is not None:
@@ -524,7 +525,8 @@ def generate_report(question, collector, contradictions,
                     source_synth: dict | None = None,
                     notes: list[str] | None = None,
                     plan: dict | None = None,
-                    budget=None) -> ReportResult:
+                    budget=None,
+                    on_chunk=None) -> ReportResult:
     """Generate the report and report how complete it is."""
     records = records or []
     if not records:
@@ -593,7 +595,8 @@ def generate_report(question, collector, contradictions,
                 "rewrite or alter them; write only the requested section so it "
                 "continues the report):\n" + digest)
 
-    def compose(system, heading, instruction, recs, words, ground: bool = False):
+    def compose(system, heading, instruction, recs, words, ground: bool = False,
+               on_chunk=None):
         """Write one section and guarantee the missing-section list stays honest.
 
         The writer records its own failure reason, but the invariant is enforced
@@ -611,7 +614,7 @@ def generate_report(question, collector, contradictions,
         before = len(failed_sections)
         section = _write_section(system, question, heading, instruction, recs, refs,
                                  targets, budget, min_words=words,
-                                 failed=failed_sections)
+                                 failed=failed_sections, on_chunk=on_chunk)
         if section:
             pool.complete(heading, section)
             return section
@@ -713,7 +716,9 @@ def generate_report(question, collector, contradictions,
         # Summarising sections are grounded in finished output, not just raw
         # evidence, so a mid-report failure cannot silently change what they say.
         ground = spec[1] in ("Executive Summary", "Conclusion", "Scope and Methodology")
-        if compose(*spec, ground=ground):
+        section_callback = (lambda chunk, heading=spec[1]:
+                            on_chunk(heading, chunk)) if on_chunk else None
+        if compose(*spec, ground=ground, on_chunk=section_callback):
             written += 1
 
     # Second pass: fallbacks resume only the model-failed sections, reading
@@ -787,10 +792,11 @@ def write_report(question, collector, contradictions,
                  source_synth: dict | None = None,
                  notes: list[str] | None = None,
                  plan: dict | None = None,
-                 budget=None) -> str:
+                 budget=None,
+                 on_chunk=None) -> str:
     """Markdown only. See :func:`generate_report` for the completion state."""
     return generate_report(question, collector, contradictions, records,
-                           source_synth, notes, plan, budget).markdown
+                           source_synth, notes, plan, budget, on_chunk=on_chunk).markdown
 
 
 def _evidence_table(records: list[Evidence], refs: dict[str, int]) -> str:
